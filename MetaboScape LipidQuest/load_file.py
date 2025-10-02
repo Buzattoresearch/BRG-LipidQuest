@@ -142,7 +142,6 @@ def sanitize_file(path, output_folder=None):
     
     # Apply data cleansing 
     df, removed_df = apply_data_cleansing(df, output_folder, contaminant_file="Appendix/Contaminants.csv")
-    # df, removed_noise_df = remove_baseline_noise(df)
 
     # --- Reorder ---
     preferred_order = [
@@ -183,5 +182,4 @@ def sanitize_file(path, output_folder=None):
 
     df.to_csv(output_path, index=False, encoding="utf-8-sig")
     removed_df.to_csv(output_path_cleansed, index=False, encoding="utf-8-sig")
-    # removed_noise_df.to_csv(output_path_noise, index=False, encoding="utf-8-sig")
     return output_path, df

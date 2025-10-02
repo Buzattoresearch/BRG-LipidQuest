@@ -1,3 +1,5 @@
+#TODO: add scoring system
+
 import os
 import pandas as pd
 from collections import Counter

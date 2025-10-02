@@ -188,6 +188,11 @@ def calculate_fatty_acyl_score(fa_list, lipid_class, total_carbons):
         return 0
     return 0.5
 
+def calculate_abbreviation_score(name):
+    if not isinstance(name, str):
+        return 0
+    return 1 if "NOABBR" in name.upper() else 0
+
 # -------------------
 # Apply Scoring
 # -------------------
@@ -204,31 +209,35 @@ def apply_scoring(df, output_folder, weights=None):
             "plasmenyl_score_weight": 6.0,
             "sensitivity_score_weight": 1.0,
             "fa_score_weight": 1.0,
+            "abbreviation_score_weight": 10.0,
         }
 
-    # initialize
-    df["MS Score"] = 100.0
-    df["Penalty breakdown"] = ""
+    # Split into assigned and unassigned
+    ann = df["Annotation"].astype(str).str.strip()
+    unassigned = df[ann.eq("") | ann.eq("nan") | df["Annotation"].isna()].copy()
+    assigned = df[~(ann.eq("") | ann.eq("nan") | df["Annotation"].isna())].copy()
+    # NOTE: do not reset index here, keep original alignment with rows_to_drop
 
+    # Initialize scoring columns
+    assigned["MS Score"] = 100.0
+    assigned["Penalty breakdown"] = ""
+    unassigned["MS Score"] = 100.0  # keep default high score
+    unassigned["Penalty breakdown"] = "unassigned"
+
+    # Load reference data
     ion_score_dict, sensitivity_dict = load_adduct_sensitivity("Appendix/Adducts_and_sensitivity_scores.csv")
     lipid_class_to_window = load_rt_groups("Appendix/RT_groups.csv", "Appendix/RT_windows.csv")
 
     rows_to_drop = []
 
     os.makedirs(output_folder, exist_ok=True)
-    os.makedirs(output_folder, exist_ok=True)
     log_path = os.path.join(output_folder, "rt_debug.log")
     dropped_path = os.path.join(output_folder, "dropped_rows.csv")
     
+    # RT filtering for assigned only
     with open(log_path, "w") as log:
-        for idx, row in df.iterrows():
+        for idx, row in assigned.iterrows():
             lipid_class = str(row.get("Lipid Class", "")).strip().upper()
-            annotation = str(row.get("Annotation", "")).strip()
-
-            # Skip RT filter if missing Annotation or Lipid Class
-            if not lipid_class or not annotation:
-                continue
-
             total_carbons = row.get("Number of carbons in fatty acyls", "")
             rt = row.get("RT (min)", "")
             chain_bin = assign_chain_bin(total_carbons)
@@ -245,22 +254,18 @@ def apply_scoring(df, output_folder, weights=None):
 
     if rows_to_drop:
         try:
-             #Get rows to be dropped safely
-            df_dropped = df.iloc[rows_to_drop].copy()
+            df_dropped = assigned.loc[rows_to_drop].copy()
             df_dropped.to_csv(dropped_path, index=False, encoding="utf-8-sig")
+            assigned = assigned.drop(index=rows_to_drop)
+        except Exception as e:
+            print(f"Could not save dropped rows: {e}", flush=True)
 
-            # Drop by index labels, not positions
-            df = df.drop(df.index[rows_to_drop])
-        except:
-            print('log file could not be saved.', flush=True)
+    # Now reset index once, after dropping
+    assigned = assigned.reset_index(drop=True)
 
-    for idx, row in df.iterrows():
+    # Compute penalties for assigned rows
+    for idx, row in assigned.iterrows():
         lipid_class = str(row.get("Lipid Class", "")).strip().upper()
-        annotation = str(row.get("Annotation", "")).strip()
-
-        # Skip scoring if missing Annotation or Lipid Class
-        if not lipid_class or not annotation:
-            continue
 
         penalties = []
         breakdown = []
@@ -315,11 +320,18 @@ def apply_scoring(df, output_folder, weights=None):
         ]
         p = calculate_fatty_acyl_score(fatty_acyls, lipid_class, row.get("Number of carbons in fatty acyls", "")) * weights["fa_score_weight"]
         penalties.append(p); breakdown.append(f"fa_score={p:.2f}")
+        
+        # Abbreviation penalty
+        p = calculate_abbreviation_score(row.get("Annotation", "")) * weights["abbreviation_score_weight"]
+        penalties.append(p); breakdown.append(f"NoAbbreviation={p:.2f}")
 
         total_penalty = sum(penalties)
-        df.at[idx, "MS Score"] = max(0, df.at[idx, "MS Score"] - total_penalty)
-        df.at[idx, "Penalty breakdown"] = "; ".join(breakdown)
+        assigned.at[idx, "MS Score"] = max(0, assigned.at[idx, "MS Score"] - total_penalty)
+        assigned.at[idx, "Penalty breakdown"] = "; ".join(breakdown)
 
-    return df
+    # Recombine assigned + unassigned
+    df_scored = pd.concat([assigned, unassigned], ignore_index=True)
+    return df_scored
+
 
 
