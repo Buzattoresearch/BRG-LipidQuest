@@ -4,7 +4,7 @@ from pathlib import Path
 from lipid_utils import (
     parse_fatty_acyls, classify_chain_type, classify_pufa,
     extract_modifications, count_modifications, is_oxidized)
-from data_cleansing import apply_data_cleansing, remove_baseline_noise
+from data_cleansing import apply_data_cleansing
 
 def read_metaboscape_table(path, sheet_name=None, index_col=None):
     path = Path(path)
@@ -142,7 +142,7 @@ def sanitize_file(path, output_folder=None):
     
     # Apply data cleansing 
     df, removed_df = apply_data_cleansing(df, output_folder, contaminant_file="Appendix/Contaminants.csv")
-    df, removed_noise_df = remove_baseline_noise(df)
+    # df, removed_noise_df = remove_baseline_noise(df)
 
     # --- Reorder ---
     preferred_order = [
@@ -183,5 +183,5 @@ def sanitize_file(path, output_folder=None):
 
     df.to_csv(output_path, index=False, encoding="utf-8-sig")
     removed_df.to_csv(output_path_cleansed, index=False, encoding="utf-8-sig")
-    removed_noise_df.to_csv(output_path_noise, index=False, encoding="utf-8-sig")
+    # removed_noise_df.to_csv(output_path_noise, index=False, encoding="utf-8-sig")
     return output_path, df
