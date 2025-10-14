@@ -1,0 +1,432 @@
+Contaminant,m/z,polarity
+"Formic acid, dimer, FA (anion)",112.98563,Neg
+Iodine anion (Iodide),126.90502,Neg
+Unknown,144.9232906,Neg
+Unknown,158.9753525,Neg
+Unknown,159.975647,Neg
+"Pentafluoropropionic acid, Perfluoropropionic acid",162.9824,Neg
+2-Mercaptobenzothiazole,165.9791,Neg
+Unknown,174.9558307,Neg
+Unknown,208.0645823,Neg
+n-butyl benzenesulfonamide,212.07507,Neg
+"Trifluoroacetic acid, TFA (anion)",226.97845,Neg
+Dantron,239.03389,Neg
+"Trifluoroacetic acid, TFA, sodiated (anion)",248.9604,Neg
+Trifluoroacetic acid,248.9604,Neg
+Sodium formate 3,248.9605,Neg
+Unknown,248.9730512,Neg
+Lauryl sulfate,265.1479,Neg
+Tetradecylsulfate,293.1781,Neg
+Unknown,299.1608887,Neg
+Triptophenolide,311.16527,Neg
+Triptophenolide,311.16827,Neg
+Copper catalyst iodide adduct,316.7391,Neg
+Sodium formate 4,316.9479,Neg
+Copper catalyst iodide adduct,318.73729,Neg
+Dodecylbenzenesulfonic acid,325.18429,Neg
+Canrenone,339.1966,Neg
+Sodium formate 5,384.9353,Neg
+Sodium formate 6,452.9227,Neg
+Sodium formate 7,520.9102,Neg
+Irganox 1076,529.4615,Neg
+Sodium formate 2,588.8976,Neg
+Sodium formate 3,656.885,Neg
+Unknown,668.2818011,Neg
+Unknown,668.3177494,Neg
+Unknown,687.3117537,Neg
+Unknown,702.3033261,Neg
+Unknown,703.2990252,Neg
+Unknown,720.2938576,Neg
+Unknown,721.2891918,Neg
+Unknown,721.2897763,Neg
+Sodium formate 4,724.8724,Neg
+Unknown,772.2550932,Neg
+Unknown,790.2458441,Neg
+Sodium formate 5,792.8599,Neg
+Unknown,800.2862139,Neg
+Unknown,800.2867892,Neg
+Unknown,818.2770366,Neg
+Sodium formate 6,860.8473,Neg
+Sodium formate 7,928.8347,Neg
+"NMP, N-methyl 2-pyrrolidone; solvent, floor stripper",100.07569,Pos
+"DMSO, Dimethylsulfoxide, solvent",101.003156,Pos
+"TEA, Triethylamine, buffer",102.127725,Pos
+"Sodium acetate, ESI solvents",104.992294,Pos
+"ACN, Acetonitrile, solvent",105.042318,Pos
+"TRIS, TRIS, buffer",122.08117,Pos
+"DMAP, Dimethylaminopyridine, solvent",123.091674,Pos
+"DIPEA, Diisopropylethylamine, solvent",130.159025,Pos
+"TPA, Tripropylamine, solvent",144.174675,Pos
+"ACN, Acetonitrile, solvent",146.068867,Pos
+Pthalic Anhydride,149.02332,Pos
+"Phenyldiethylamine, solvent",150.127725,Pos
+"DBU, 1,8-Diazabicyclo[5.4.0]undec-7-ene",153.138624,Pos
+"DMSO, Dimethylsulfoxide, solvent",157.035148,Pos
+"NaTFA, Sodium trifluoroacetate, salt",158.964029,Pos
+"DGBE, Diethylene glycol monobutyl ether, cpd. In scintillation cocktail",163.132871,Pos
+"d6-DMSO, d6-Dimethylsulfoxide, solvent",169.11046,Pos
+"4-HCCA, matrix compound",172.039305,Pos
+"DMSO, Dimethylsulfoxide, solvent",179.017092,Pos
+"BHA, Butylated hydroxyanisole, antioxidant additives",181.122306,Pos
+"DPK, Diphenyl ketone",183.080441,Pos
+"GE, glycol ether",185.114815,Pos
+2-(4-Methylthiazol-5-yl)ethyl acetate,186.05833,Pos
+"TBA, Tributylamine, solvent",186.221625,Pos
+TBA,186.22163,Pos
+"4-HCCA, matrix compound",190.04987,Pos
+"Dimethyl phthalate, Phthalate esters, plasticizer",195.065186,Pos
+Unknown,195.1228765,Pos
+Unknown,196.2061899,Pos
+Diethylene glycol monobutyl ether,201.0888,Pos
+Unknown,202.2167124,Pos
+"BHA, Butylated hydroxyanisole, antioxidant additives",203.10425,Pos
+Unknown,211.1938187,Pos
+"4-HCCA, matrix compound, sodiated",212.031814,Pos
+"n-BBS, n-butyl benzenesulfonamide, plasticizer",214.089626,Pos
+Unknown,217.1050227,Pos
+"BTH, Butylated hydroxytoluene, Antioxidant",221.189991,Pos
+"DCU, N,N'-Dicyclohexylurea",225.196139,Pos
+Sodium formate 1,226.9515,Pos
+Unknown,227.2063693,Pos
+Lauryldimethylamine oxide,230.2478,Pos
+"n-BBS, n-butyl benzenesulfonamide, plasticizer",231.116175,Pos
+"n-BBS, n-butyl benzenesulfonamide, plasticizer",236.07157,Pos
+"N,N-Dimethyltetradecylamine",242.2842,Pos
+"BTH, Butylated hytroxytoluene, Antioxidant additives",243.171935,Pos
+1-Dodecyl-2-pyrrolidinone,254.2478,Pos
+"DMSO, Dimethylsulfoxide, solvent",257.031028,Pos
+Myristamine oxide,258.2791,Pos
+Unknown,261.1312641,Pos
+"TBP, Tributylphosphate",267.171973,Pos
+Unknown,270.3156198,Pos
+Tris(2-ethylhexl)phosphate,279.0933,Pos
+"TPO, Triphenylphosphine oxide",279.093328,Pos
+"Dibutylphthalate, Plasticiser, phtalate ester",279.159086,Pos
+Dibutyl phthalate,279.1591,Pos
+"Dodemorph, Laurocapram",282.2791,Pos
+"Oleamide, Slip agent in polyethylene films",282.27914,Pos
+Hexaethylene glycol,283.1751,Pos
+"Stearamide, Slip agent in polyethylene films",284.29479,Pos
+"n,n-DDA, n,n-bis(2-hydroxyethyl) dodecanamide, anti-static agent",288.25332,Pos
+Unknown,288.2533864,Pos
+Sodium formate 2,294.9389,Pos
+PEG (n6),300.20168,Pos
+"Dibutylphthalate, Dibutylphthalate, plasticizer",301.14103,Pos
+"Oleamide, Slip agent in polyethylene films",304.261084,Pos
+Fenpropimorph,304.2635,Pos
+"Stearamide, Slip agent in polyethylene films",306.276734,Pos
+EDTA,315.0799,Pos
+"DBS, Dibutyl sebacate, plasticizer",315.252986,Pos
+"Dibutylphthalate, plasticizer",317.11497,Pos
+Bis(2-ethylhexyl)phosphate (DEHPA),323.2346,Pos
+"DGBE, Diethylene glycol monobutyl ether, cpd. In scintillation cocktail",325.258466,Pos
+"TPP, Triphenyl phosphate, flame retardant in plastics",327.078073,Pos
+Triphenyl phosphate (TPP),327.0781,Pos
+Dicyclohexylphthalate,331.1904,Pos
+Dihexyl phthalate,335.2217,Pos
+Unknown,337.2349777,Pos
+Erucamide,338.3417,Pos
+"Erucamide, Erucamide, (Cis-13-docosenoic amide)",338.34174,Pos
+Cocamidopropyl betaine,343.2966,Pos
+PEG (n7),344.22789,Pos
+Erucamide,355.3683,Pos
+Chlorfenvinphos,358.9768,Pos
+"Erucamide, Erucamide, (Cis-13-docosenoic amide)",360.323684,Pos
+Erucamide,360.3237,Pos
+Sodium formate 3,362.9263,Pos
+"3,6,9,12-Tetraoxatetracosan-1-ol (contaminant, used in cosmetics as a cleansing, emulsifying and surfactant agent)",363.3116,Pos
+Tricresylphosphate (TCP),369.125,Pos
+"Polysiloxane, Polysiloxane, followed by m/z 388",371.101236,Pos
+"DEHA, Bis(2-ethylhexyl) adipate, plasticizer",371.315586,Pos
+"DOA, Dioctyl adipate, plasticizer",371.315586,Pos
+"4-HCCA, matrix cluster, dimer",379.092464,Pos
+"Triton, reduced",381.2975,Pos
+"Polysiloxane, Polysiloxane, (see m/z 371)",388.127785,Pos
+PEG (n8),388.25411,Pos
+"Diisooctyl phthalate, Diisooctyl phthalate, plasticiser",391.284286,Pos
+Dioctyl phthalate (plasticizer),391.2843,Pos
+Unknown,394.3529386,Pos
+Dioctyl phthalate (plasticizer),413.26623,Pos
+"Diisooctyl phthalate, Diisooctyl phthalate, plasticiser",413.26623,Pos
+Unknown,420.3321981,Pos
+"1,2-Cyclohexane dicarboxylic acid diisononyl ester (DINCH)",425.36254,Pos
+Dioctyl phthalate (plasticizer),429.24017,Pos
+Sodium formate 4,430.9138,Pos
+PEG (n9),432.28032,Pos
+Tris(2-ethylhexl)phosphate,435.3598,Pos
+Unknown,444.3799879,Pos
+"Polysiloxane, Polysiloxane, followed by m/z 462",445.120028,Pos
+"PPG, Polypropylene glycol, ubiquitous polyether",447.29284,Pos
+"DCU, N,N'-Dicyclohexylurea",449.385002,Pos
+"nylon , Cyclic oligomer of polyamide 66, (adipic acid/hexylmethylene diamine condensation) ",453.343532,Pos
+Dioctyl phthalate (plasticizer),454.29278,Pos
+"Polysiloxane, Polysiloxane (see m/z 445)",462.146577,Pos
+Unknown,464.2927989,Pos
+"Peptide, porcine trypsin",472.28781,Pos
+Unknown,473.2651103,Pos
+PEG (n10),476.30654,Pos
+Unknown,478.3893258,Pos
+Unknown,478.3896484,Pos
+Unknown,492.4050001,Pos
+Sodium formate 5,498.9012,Pos
+"Peptide, trypsin-like artefact",515.330008,Pos
+"DDTDP, Didodecyl 3,3?-thiodipropionate, antioxidant",515.412857,Pos
+"Polysiloxane, Polysiloxane, followed by m/z 536",519.13882,Pos
+PEG (n11),520.33275,Pos
+Unknown,522.597991,Pos
+Unknown,526.431913,Pos
+"DDTDP, Didodecyl 3,3?-thiodipropionate oxidized to sulfoxide, antioxidant",531.407772,Pos
+"Irganox, Irganox 1076, antioxidant in synthetic polymers, antioxidant",531.477171,Pos
+"Polysiloxane, Polysiloxane (see m/z 519)",536.165369,Pos
+"DDTDP, Didodecyl 3,3?-thiodipropionate oxidized to sulfone, antioxidant",547.402687,Pos
+Irganox 1076,548.5037,Pos
+Unknown,551.6328125,Pos
+"DDTDP, Didodecyl 3,3?-thiodipropionate oxidized to sulfoxide, antioxidant",553.389716,Pos
+"Irganox, Irganox 1076, antioxidant in synthetic polymers, antioxidant",553.459115,Pos
+Sodium formate,566.8886,Pos
+"4-HCCA, matrix cluster, trimer",568.135058,Pos
+Unknown,570.4580098,Pos
+"Peptide, porcine trypsin",571.35622,Pos
+"Polysiloxane, Polysiloxane, followed by m/z 610",593.157612,Pos
+"Polysiloxane, Polysiloxane (see m/z 593)",610.184161,Pos
+Polisiloxane 1,610.1842,Pos
+"CHAPS, 3-[(3-Cholamidopropyl)dimethylammonio]-1-propanesulfonate",615.40375,Pos
+"Peptide, Bovine trypsin",633.320233,Pos
+Polisiloxane 14,651.1451,Pos
+"Peptide, Bovine trypsin",659.383501,Pos
+"Polysiloxane, Polysiloxane, followed by m/z 684",667.176404,Pos
+"Peptide, porcine trypsin",672.4039,Pos
+"Peptide, porcine trypsin",672.4039,Pos
+Erucamide,675.6752,Pos
+Unknown,678.4791783,Pos
+"nylon , Cyclic oligomer of polyamide 66, (adipic acid/hexylmethylene diamine condensation) ",679.51166,Pos
+"Polysiloxane, Polysiloxane (see m/z 667)",684.202953,Pos
+Polisiloxane 2,684.203,Pos
+Unknown,691.3141754,Pos
+"Peptide, keratin",704.382499,Pos
+Unknown,704.5229453,Pos
+Unknown,705.2939362,Pos
+Unknown,712.2648387,Pos
+Unknown,718.5381989,Pos
+Polisiloxane 15,725.1639,Pos
+Unknown,732.3410124,Pos
+"Peptide, bovine serum albumin (BSA)",732.465439,Pos
+"Polysiloxane, Polysiloxane, followed by m/z 758",741.195196,Pos
+"Peptide, bovine casein alpha-S1",742.449789,Pos
+"Peptide, porcine trypsin",743.44101,Pos
+Unknown,746.3201819,Pos
+Polisiloxane 3,758.2217,Pos
+"Polysiloxane, Polysiloxane (see m/z 741)",758.221745,Pos
+"Peptide, porcine trypsin",758.41553,Pos
+Unknown,766.5312423,Pos
+Unknown,790.5889799,Pos
+"Diisooctyl phthalate, Diisooctyl phthalate, plasticiser",798.587845,Pos
+Dioctyl phthalate (plasticizer),798.58785,Pos
+Polisiloxane 16,799.1827,Pos
+"Peptide, porcine trypsin, truncated",802.430512,Pos
+Dioctyl phthalate (plasticizer),803.54324,Pos
+"Diisooctyl phthalate, Diisooctyl phthalate, plasticiser",803.54324,Pos
+"Peptide, keratin (human)",804.409777,Pos
+"Peptide, bovine trypsin",805.416259,Pos
+"Peptide, keratin (human)",807.39954,Pos
+"Peptide, keratin",809.440348,Pos
+Unknown,810.557304,Pos
+Dioctyl phthalate (plasticizer),819.51718,Pos
+"Peptide, trypsin-like artefact",824.498865,Pos
+"Peptide, keratin (human)",827.42978,Pos
+"Peptide, keratin (human)",827.46214,Pos
+Polisiloxane 4,832.2405,Pos
+"Peptide, keratin (human)",832.488695,Pos
+"Peptide, porcine trypsin",842.50943,Pos
+"Peptide, keratin (human)",848.49886,Pos
+Unknown,864.7001083,Pos
+"Peptide, porcine trypsin - methylated",870.54073,Pos
+"Peptide, trypsin-like artefact",871.499594,Pos
+Polisiloxane 17,873.2015,Pos
+"Peptide, keratin (human)",874.49926,Pos
+"Peptide, keratin (human)",881.472711,Pos
+"Peptide, Angiotensin standards",883.514849,Pos
+"Peptide, trypsin-like artefact",899.530894,Pos
+"nylon , Cyclic oligomer of polyamide 66, (adipic acid/hexylmethylene diamine condensation) ",905.679788,Pos
+Polisiloxane 5,906.2593,Pos
+"Peptide, bovine trypsin",906.50434,Pos
+"Peptide, porcine trypsin",906.50434,Pos
+"Peptide, Angiotensin standards (bovine)",917.499199,Pos
+"Peptide, Angiotensin standards (human)",931.514849,Pos
+Polisiloxane 18,947.2203,Pos
+"Peptide, trypsin-like artefact, truncated",950.473045,Pos
+"Peptide, keratin (human)",973.53129,Pos
+"Peptide, bovine trypsin",979.50949,Pos
+Polisiloxane 6,980.2781,Pos
+"Peptide, keratin",995.519661,Pos
+"Peptide, keratin",1000.56734,Pos
+"Peptide, bovine serum albumin (BSA)",1002.58299,Pos
+"Peptide, keratin",1003.553087,Pos
+"Peptide, bovine trypsin",1020.50302,Pos
+"Peptide, trypsin-like artefact, truncated",1020.53604,Pos
+Polisiloxane 19,1021.2391,Pos
+"Peptide, trypsin-like artefact, truncated",1023.474169,Pos
+"Peptide, bovine trypsin",1023.51055,Pos
+"Peptide, keratin (human)",1031.5983,Pos
+"Peptide, keratin (human)",1033.51603,Pos
+"Peptide, keratin",1036.532291,Pos
+"Peptide, keratin (human)",1037.5262,Pos
+"Peptide, porcine trypsin",1045.56365,Pos
+"Peptide, bovine trypsin",1046.59528,Pos
+Polisiloxane 7,1054.2969,Pos
+"Peptide, keratin (human)",1060.56331,Pos
+"Peptide, lysyl endopeptidase (Lys-C)",1064.573488,Pos
+"Peptide, keratin (human)",1064.60987,Pos
+"Peptide, keratin",1065.499338,Pos
+"Peptide, keratin (human)",1066.60439,Pos
+"Peptide, keratin (human)",1071.60445,Pos
+"Peptide, keratin (human)",1082.59931,Pos
+"Peptide, keratin (human)",1090.53097,Pos
+"Peptide, porcine trypsin",1091.548,Pos
+Polisiloxane 20,1095.2579,Pos
+"Peptide, keratin (human)",1109.48982,Pos
+"Peptide, bovine trypsin",1111.56048,Pos
+"Peptide, keratin (human)",1118.508597,Pos
+"Peptide, keratin (human)",1121.58372,Pos
+"Peptide, porcine trypsin, methylated, truncated",1126.563986,Pos
+Polisiloxane 8,1128.3157,Pos
+"Peptide, Keratin",1129.621167,Pos
+"Peptide, Keratin",1141.519405,Pos
+"Peptide, bovine trypsin",1143.55031,Pos
+"Peptide, bovine trypsin",1153.57354,Pos
+"Peptide, keratin (human)",1157.59093,Pos
+"Peptide, keratin (human)",1165.584782,Pos
+"Peptide, bovine trypsin",1168.581944,Pos
+Polisiloxane 21,1169.2766,Pos
+"Peptide, bovine trypsin",1175.522381,Pos
+"Peptide, porcine trypsin",1175.63404,Pos
+"Peptide, keratin (human)",1179.60043,Pos
+"Peptide, keratin (human)",1183.61574,Pos
+"Peptide, kereatin",1190.608554,Pos
+"Peptide, bovine trypsin",1191.517296,Pos
+"Peptide, porcine trypsin",1191.628955,Pos
+"Peptide, keratin (human)",1193.61608,Pos
+"Peptide, bovine trypsin",1200.571774,Pos
+Polisiloxane 9,1202.3345,Pos
+"Peptide, trypsin-like artefact",1203.640188,Pos
+"Peptide, keratin (human)",1208.61574,Pos
+"Peptide, keratin (human)",1210.59501,Pos
+"Peptide, bovine trypsin",1210.59501,Pos
+"Peptide, trypsin-like artefact",1219.635103,Pos
+"Peptide, porcine trypsin",1220.59059,Pos
+"CHAPS, 3-[(3-Cholamidopropyl)dimethylammonio]-1-propanesulfonate",1229.800224,Pos
+"Peptide, bovine trypsin",1232.543845,Pos
+"Peptide, keratin (human)",1232.5978,Pos
+"Peptide, keratin (human)",1235.528725,Pos
+Polisiloxane 22,1243.2954,Pos
+"Peptide, bovine trypsin",1248.53876,Pos
+"Peptide, bovine casein alpha-S1",1251.709587,Pos
+"Peptide, keratin (human)",1254.6073,Pos
+"Peptide, keratin",1262.597139,Pos
+"Peptide, trypsin-like artefact",1262.757934,Pos
+"Peptide, keratin (human)",1265.63721,Pos
+"Peptide, bovine casein alpha-S1",1267.704502,Pos
+Polisiloxane 10,1276.3533,Pos
+"Peptide, keratin (human)",1277.63319,Pos
+"Peptide, keratin (human)",1277.70998,Pos
+"Peptide, keratin",1278.585528,Pos
+"Peptide, keratin (human)",1278.64369,Pos
+"Peptide, Angiotensin standards (bovine)",1282.669119,Pos
+"Peptide, Angiotensin standards (human)",1296.684769,Pos
+"Peptide, keratin",1301.658342,Pos
+"Peptide, keratin (human)",1302.701209,Pos
+"Peptide, keratin (human)",1302.71512,Pos
+"Peptide, bovine serum albumin (BSA)",1305.71613,Pos
+"Peptide, keratin (human)",1307.677636,Pos
+"Peptide, bovine trypsin",1308.64302,Pos
+"Peptide, keratin (human)",1308.654259,Pos
+"Peptide, keratin",1315.685225,Pos
+"Peptide, trypsin-like artefact",1316.724252,Pos
+Polisiloxane 23,1317.3142,Pos
+"Peptide, keratin (human)",1320.582825,Pos
+"Peptide, keratin (human)",1323.672551,Pos
+"Peptide, keratin (human)",1329.63933,Pos
+"Peptide, trypsin-like artefact",1332.719167,Pos
+"Peptide, keratin (human)",1336.71071,Pos
+"Peptide, keratin",1340.669241,Pos
+"Peptide, keratin",1344.675389,Pos
+Polisiloxane 11,1350.3721,Pos
+"Peptide, keratin",1350.68729,Pos
+"Peptide, keratin (human)",1357.69579,Pos
+"Peptide, keratin (human)",1357.71825,Pos
+"Peptide, keratin (human)",1365.63933,Pos
+"Peptide, lysyl endopeptidase (Lys-C)",1366.696124,Pos
+"Peptide, lysyl endopeptidase (Lys-C)",1367.670243,Pos
+"Peptide, keratin (human)",1371.71144,Pos
+"Peptide, keratin (human)",1374.69334,Pos
+"Peptide, keratin (human)",1381.64817,Pos
+"Peptide, keratin (human)",1383.69031,Pos
+"Peptide, bovine casein alpha-S1",1384.729988,Pos
+"Peptide, keratin",1390.680869,Pos
+Polisiloxane 24,1391.333,Pos
+"Peptide, keratin (human)",1393.73217,Pos
+"Peptide, bovine serum albumin (BSA)",1399.692618,Pos
+"Peptide, keratin",1418.727424,Pos
+"Peptide, keratin",1419.747825,Pos
+"Peptide, keratin (human)",1419.79544,Pos
+Polisiloxane 12,1424.3909,Pos
+"Peptide, porcine trypsin, methylated",1424.764477,Pos
+"Peptide, bovine trypsin",1433.72056,Pos
+"Peptide, keratin (human)",1434.769957,Pos
+"Peptide, keratin (human)",1438.74374,Pos
+"Peptide, bovine serum albumin (BSA)",1439.811761,Pos
+"Peptide, keratin",1442.800194,Pos
+"Peptide, bovine serum albumin (BSA)",1443.642041,Pos
+"Peptide, keratin (human)",1447.7751,Pos
+"Peptide, bovine trypsin",1449.715479,Pos
+"Peptide, keratin",1453.837308,Pos
+Polisiloxane 25,1465.3518,Pos
+"Peptide, bovine trypsin",1465.710394,Pos
+"Peptide, keratin (human)",1475.74888,Pos
+"Peptide, keratin (human)",1475.78527,Pos
+"Peptide, keratin",1476.805674,Pos
+"Peptide, bovine serum albumin (BSA)",1479.795443,Pos
+"Peptide, bovine trypsin",1490.742028,Pos
+"Peptide, keratin (human)",1491.743803,Pos
+"Peptide, bovine serum albumin (BSA)",1491.751847,Pos
+"Peptide, porcine trypsin",1493.599525,Pos
+"Peptide, keratin (human)",1493.734301,Pos
+"Peptide, bovine trypsin",1495.615175,Pos
+Polisiloxane 13,1498.4097,Pos
+"Peptide, keratin (human)",1507.738718,Pos
+"Peptide, bovine trypsin",1521.75436,Pos
+"Peptide, bovine trypsin",1522.731858,Pos
+"Peptide, keratin",1549.677198,Pos
+"Peptide, porcine trypsin, truncated",1566.73944,Pos
+"Peptide, bovine serum albumin (BSA)",1567.74274,Pos
+"Peptide, keratin (human)",1585.7584,Pos
+"Peptide, keratin",1599.833681,Pos
+"Peptide, porcine trypsin, methylated",1623.885321,Pos
+"Peptide, keratin (human)",1638.76566,Pos
+"Peptide, bovine serum albumin (BSA)",1639.937751,Pos
+"Peptide, keratin (human)",1657.79287,Pos
+"Peptide, keratin (human)",1665.90443,Pos
+"Peptide, bovine trypsin",1676.776227,Pos
+"Peptide, keratin (human)",1687.97011,Pos
+"Peptide, keratin (human)",1707.77214,Pos
+"Peptide, keratin (human)",1708.713249,Pos
+"Peptide, porcine trypsin, truncated",1713.80785,Pos
+"Peptide, keratin (human)",1716.85112,Pos
+"Peptide, bovine trypsin",1725.862872,Pos
+"Peptide, keratin (human)",1744.92283,Pos
+"Peptide, bovine trypsin",1757.852702,Pos
+"Peptide, keratin (human)",1765.734713,Pos
+"Peptide, bovine trypsin",1774.850259,Pos
+"Peptide, porcine trypsin",1774.897,Pos
+"Peptide, keratin (human)",1791.727715,Pos
+"Peptide, keratin",1792.878583,Pos
+"Peptide, keratin",1797.011645,Pos
+"Peptide, lysyl endopeptidase (Lys-C)",1830.840558,Pos
+"Peptide, keratin",1837.965424,Pos
+"Peptide, keratin (human)",1838.914391,Pos
+"Peptide, keratin",1847.805101,Pos
+"Peptide, keratin",1851.92693,Pos
+"Peptide, porcine trypsin, truncated, methylated",1940.934853,Pos
+"Peptide, porcine trypsin, methylated",1987.078011,Pos
+"Peptide, keratin (human)",1993.976657,Pos
+"Peptide, keratin (human)",1993.982532,Pos
