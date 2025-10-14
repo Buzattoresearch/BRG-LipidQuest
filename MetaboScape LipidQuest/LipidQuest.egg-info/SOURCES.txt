@@ -1,7 +1,0 @@
-setup.py
-LipidQuest.egg-info/PKG-INFO
-LipidQuest.egg-info/SOURCES.txt
-LipidQuest.egg-info/dependency_links.txt
-LipidQuest.egg-info/entry_points.txt
-LipidQuest.egg-info/requires.txt
-LipidQuest.egg-info/top_level.txt
