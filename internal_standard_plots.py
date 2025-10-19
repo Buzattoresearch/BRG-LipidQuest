@@ -13,7 +13,7 @@ def plot_internal_standards(
       (2) Δm/z error plots (Da and ppm) by polarity
       (3) Individual bar plots for each internal standard across all detected sample columns
     """
-
+    print(f'\nGenerating internal standard plots...\n')
     output_folder = Path(output_folder)
     output_folder.mkdir(parents=True, exist_ok=True)
     individual_folder = output_folder / "Internal standards"

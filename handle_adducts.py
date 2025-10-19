@@ -1,5 +1,4 @@
 # -------------------------------------------------------------------------
-# handle_adducts.py
 # Post-filtering adduct collapsing for LC-MS lipidomics results
 # -------------------------------------------------------------------------
 import pandas as pd
@@ -23,6 +22,7 @@ def handle_adducts(
              b) Highest mean intensity.
       3. All other redundant peaks are removed and logged.
     """
+    print(f'\nHandling adducts...\n')
     input_csv = Path(input_csv)
     output_folder = Path(output_folder)
     output_folder.mkdir(parents=True, exist_ok=True)
@@ -44,7 +44,21 @@ def handle_adducts(
     else:
         df["Annotation Type norm"] = "MS MATCH"
 
+    # Normalize "unknown-like" annotations to NaN (case/space-insensitive)
+    _unknown_tokens = {"", "nan", "n/a", "none", "unassigned", "unknown", "no match"}
+    ann_norm = (
+        df["Annotation"]
+        .astype(str)
+        .str.strip()
+        .str.casefold()
+        .map(lambda s: np.nan if s in _unknown_tokens else s)
+    )
+    df["Annotation_norm"] = ann_norm
+        
     # Assign priority: lower = better
+    # -----------------------------------------------------------------
+    # Compute helper columns before grouping
+    # -----------------------------------------------------------------
     def get_priority(x):
         if "MS/MS" in x:
             return 0
@@ -63,18 +77,32 @@ def handle_adducts(
     # -------------------------------
     # Exclude internal standards early
     # -------------------------------
-    if "Annotation Type norm" in df.columns:
-        is_mask = df["Annotation Type norm"].eq("IS")
-        is_df = df[is_mask].copy()
-        df = df[~is_mask].copy()
-        if not is_df.empty:
-            print(f"[INFO] Skipping {len(is_df)} internal standard features from adduct collapsing.", flush=True)
-    else:
-        is_df = pd.DataFrame()
+    is_mask = df["Annotation Type norm"].eq("IS")
+    is_df = df[is_mask].copy()
+    df = df[~is_mask].copy()
+    if not is_df.empty:
+        print(f"[INFO] Skipping {len(is_df)} internal standard features from adduct collapsing.", flush=True)
 
-    for ann, group in df.groupby("Annotation"):
-        if pd.isna(ann) or str(ann).strip() == "":
-            kept_rows.append(group)  # keep unannotated rows
+    # -----------------------------------------------------------------
+    # Normalize "unknown-like" annotations to NaN and group
+    # -----------------------------------------------------------------
+    _unknown_tokens = {"", "nan", "n/a", "none", "unassigned", "unknown", "no match"}
+    ann_norm = (
+        df["Annotation"]
+        .astype(str)
+        .str.strip()
+        .str.casefold()
+        .map(lambda s: np.nan if s in _unknown_tokens else s)
+    )
+    df["Annotation_norm"] = ann_norm
+
+    # -----------------------------------------------------------------
+    # Collapse adducts within annotation, keeping NaN (unknown) group intact
+    # -----------------------------------------------------------------
+    for ann, group in df.groupby("Annotation_norm", dropna=False):
+        if pd.isna(ann):
+            # Keep unannotated/unknown rows untouched
+            kept_rows.append(group)
             continue
 
         group_sorted = group.sort_values("RT_seconds")
@@ -88,21 +116,20 @@ def handle_adducts(
             window_group["missing_count"] = window_group[sample_cols].isna().sum(axis=1)
             window_group["mean_intensity"] = window_group[sample_cols].mean(axis=1, skipna=True)
 
-            # Rank by: annotation type priority → missing count → mean intensity
+            # Rank by priority → missing_count → mean_intensity
             best_row = (
                 window_group
                 .sort_values(["type_priority", "missing_count", "mean_intensity"],
-                             ascending=[True, True, False])
+                            ascending=[True, True, False])
                 .iloc[0]
             )
 
             kept_rows.append(best_row.to_frame().T)
 
-            # Identify removed rows
+            # Identify and log removed rows
             to_remove = window_group.drop(best_row.name)
             if not to_remove.empty:
                 removed_rows.append(to_remove)
-
                 removed_list = [
                     f"m/z={r['m/z']:.4f} @RT={r['RT (min)']:.2f}min ({r.get('Annotation Type', '')} {r.get('Adducts', '')})"
                     for _, r in to_remove.iterrows()
@@ -129,7 +156,7 @@ def handle_adducts(
     removed_df = pd.concat(removed_rows, ignore_index=True) if removed_rows else pd.DataFrame()
 
     # Save outputs
-    kept_path = output_folder / "2-Final_search_results_adducts_collapsed.csv"
+    kept_path = debug_folder / "2-Final_annotated_results_adducts_collapsed.csv"
     removed_path = debug_folder / "removed_adducts.csv"
     summary_path = debug_folder / "adduct_collapse_summary.csv"
 
@@ -156,7 +183,7 @@ def handle_adducts(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Collapse adduct-related duplicate peaks after filtering.")
-    parser.add_argument("--input", required=True, help="Path to 1-Final_search_results.csv")
+    parser.add_argument("--input", required=True, help="Path to 1-Final_MS_results.csv")
     parser.add_argument("--out", default="results", help="Output folder")
     parser.add_argument("--tol", type=float, default=10, help="RT tolerance in seconds (default=10)")
     args = parser.parse_args()

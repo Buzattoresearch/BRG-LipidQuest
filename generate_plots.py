@@ -8,6 +8,13 @@ import os
 import numpy as np
 import seaborn as sns
 
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message=".*is_sparse is deprecated.*",
+    category=FutureWarning
+)
+
 # --- Global matplotlib style settings ---
 rcParams["font.family"] = "Arial"          # or 'DejaVu Sans', 'Helvetica', 'Calibri', "serif", etc.
 rcParams["font.size"] = 14                 # default text size
@@ -27,8 +34,10 @@ def plot_results(input_csv, output_folder="results"):
     - Distribution of MS Scores (if available)
     Internal standards (IS) are excluded automatically.
     """
+    print(f'\nPlotting annotation results...\n')
+
     df = pd.read_csv(input_csv)
-    output_folder = Path(output_folder)
+    output_folder = Path(output_folder) / "Annotation plots"
     output_folder.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
@@ -105,50 +114,77 @@ def plot_results(input_csv, output_folder="results"):
     # ------------------------------------------------------------------
     # Plot 2: Scatter RT vs m/z (auto color & shape per lipid class)
     # ------------------------------------------------------------------
-    if "RT (min)" in df.columns and "m/z" in df.columns and "Lipid Class" in df.columns:
+    if {"RT (min)", "m/z", "Lipid Class"}.issubset(df.columns):
         plt.figure(figsize=(8, 6))
 
-        # Get lipid classes (excluding internal standards)
-        classes = sorted(df.loc[~df["Lipid Class"].str.contains("IS", case=False, na=False), "Lipid Class"].unique())
-        n_classes = len(classes)
+        # --- Sanitize numeric columns ---
+        df["RT (min)"] = pd.to_numeric(df["RT (min)"], errors="coerce")
+        df["m/z"] = pd.to_numeric(df["m/z"], errors="coerce")
 
-        # Use automatically cycling colors and marker styles
-        colors = plt.cm.tab20.colors  # categorical color palette
-        markers = ["o", "s", "D", "^", "v", "P", "X", "*", "p", "h", "<", ">", "d"]
+        # --- Clean Lipid Class entries ---
+        df["Lipid Class"] = (
+            df["Lipid Class"]
+            .astype(str)
+            .str.strip()
+            .replace(["nan", "NaN", "None"], "")
+        )
 
-        # Plot each lipid class with a unique color/marker combo
-        for i, lipid_class in enumerate(classes):
-            group = df[df["Lipid Class"] == lipid_class]
-            color = colors[i % len(colors)]
-            marker = markers[i % len(markers)]
+        # --- Drop unassigned / unknown / empty ---
+        df_valid = df[
+            ~df["Lipid Class"].str.contains("IS", case=False, na=False)
+            & ~df["Lipid Class"].isin(["", "Unassigned", "Unknown", "No match"])
+        ].copy()
 
-            plt.scatter(
-                group["RT (min)"],
-                group["m/z"],
-                s=35,
-                alpha=0.7,
-                c=[color],
-                marker=marker,
-                label=lipid_class,
-                edgecolor="none"
+        # --- Drop rows missing RT or m/z ---
+        df_valid = df_valid.dropna(subset=["RT (min)", "m/z"])
+
+        # --- Identify classes ---
+        classes = sorted(df_valid["Lipid Class"].unique())
+        print(f"[DEBUG] RT–m/z plot classes (excluding unknowns): {classes}")
+
+        if len(classes) == 0:
+            print("[WARNING] No valid lipid classes to plot.", flush=True)
+        else:
+            colors = list(plt.cm.tab20.colors)
+            markers = ["o", "s", "D", "^", "v", "P", "X", "*", "p", "h", "<", ">", "d"]
+
+            for i, lipid_class in enumerate(classes):
+                group = df_valid[df_valid["Lipid Class"] == lipid_class]
+                if group.empty:
+                    continue
+                color = colors[i % len(colors)]
+                marker = markers[i % len(markers)]
+                plt.scatter(
+                    group["RT (min)"],
+                    group["m/z"],
+                    s=35, alpha=0.7, color=color, marker=marker,
+                    label=lipid_class
+                )
+
+            plt.xlabel("RT (min)", fontsize=12, fontweight="bold")
+            plt.ylabel("m/z", fontsize=12)
+            plt.title("RT vs m/z by Lipid Class", fontsize=14, fontweight="bold")
+            plt.legend(
+                title="Lipid Class",
+                bbox_to_anchor=(1.05, 1),
+                loc="upper left",
+                fontsize=8,
+                title_fontsize=9
             )
-
-        plt.xlabel("RT (min)", fontsize=12, fontweight="bold")
-        plt.ylabel("m/z", fontsize=12)
-        plt.title("RT vs m/z by Lipid Class", fontsize=14, fontweight="bold")
-        plt.legend(title="Lipid Class", bbox_to_anchor=(1.05, 1), loc="upper left", fontsize=8, title_fontsize=9)
-        plt.tight_layout()
-        plt.savefig(output_folder / "rt_vs_mz_by_class.png", dpi=300, bbox_inches="tight")
-        plt.savefig(output_folder / "rt_vs_mz_by_class.svg", dpi=300, bbox_inches="tight", format="svg")
-        plt.close()
+            plt.tight_layout()
+            plt.savefig(output_folder / "rt_vs_mz_by_class.png", dpi=300, bbox_inches="tight")
+            plt.savefig(output_folder / "rt_vs_mz_by_class.svg", dpi=300, bbox_inches="tight", format="svg")
+            plt.close()
     else:
-        print("[WARNING] Missing columns ('RT (min)', 'm/z', or 'Lipid Class'). Skipping RT vs m/z plot.", flush=True)
+        print("[WARNING] Missing required columns for RT–m/z plot.", flush=True)
+
            
 def plot_kendrick_mass_vs_defect(input_csv, results_folder):
     """
     Generates a Kendrick Mass vs Kendrick Mass Defect plot by lipid class,
     optimized for readability and balanced layout.
     """
+    print(f'\nPlotting Kendrick Mass Defect results...\n')
     df = pd.read_csv(input_csv)
 
     # --- Basic filtering ---
@@ -201,8 +237,12 @@ def plot_kendrick_mass_vs_defect(input_csv, results_folder):
     plt.grid(False)
 
     # --- Save ---
-    out_svg = Path(results_folder) / "kendrick_mass_defect_by_class.svg"
-    out_png = Path(results_folder) / "kendrick_mass_defect_by_class.png"
+    out_svg = Path(results_folder) / "Annotation plots" / "kendrick_mass_defect_by_class.svg"
+    out_png = Path(results_folder) / "Annotation plots" / "kendrick_mass_defect_by_class.png"
+
+    # Create the parent folder if it doesn't exist
+    out_svg.parent.mkdir(parents=True, exist_ok=True)
+
     plt.savefig(out_svg, bbox_inches="tight", format="svg")
     plt.savefig(out_png, bbox_inches="tight", dpi=400)
     plt.close()

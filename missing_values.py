@@ -8,6 +8,13 @@ import numpy as np
 from pathlib import Path
 import importlib.util
 
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message=".*is_sparse is deprecated.*",
+    category=FutureWarning
+)
+
 def load_qc_threshold():
     """Try to read qc_rsd_threshold from data_cleansing.py, else default to 30."""
     try:
@@ -186,13 +193,10 @@ def impute_missing_values(final_csv, group_csv, output_folder="results",
         df_imputed.drop(columns=cols_to_drop, inplace=True)
         print(f"Dropped {len(cols_to_drop)} redundant intensity/RSD columns.")
     cols_to_drop = [c for c in filtered_df.columns if c.startswith(drop_patterns) and c not in existing_rsd_cols]
-    if cols_to_drop:
-        filtered_df.drop(columns=cols_to_drop, inplace=True)
-        print(f"Dropped {len(cols_to_drop)} redundant intensity/RSD columns.")
 
     # --- Save outputs ---
-    output_path_full = output_folder / "debug" / "Final_search_results_imputed_before_filtering.csv"
-    output_path_filtered = output_folder / "3-Final_search_results_imputed_filtered.csv"
+    output_path_full = output_folder / "debug" / "3-Final_annotated_results_imputed_before_filtering.csv"
+    output_path_filtered = output_folder / "debug" / "4-Final_annotated_results_imputed_filtered.csv"
     output_path_removed = output_folder / "debug" / "Removed_high_QC_RSD.csv"
 
     df_imputed.to_csv(output_path_full, index=False, encoding="utf-8-sig")
@@ -200,7 +204,7 @@ def impute_missing_values(final_csv, group_csv, output_folder="results",
     removed_df.to_csv(output_path_removed, index=False, encoding="utf-8-sig")
 
     print(f"Imputation complete. Overwritten QC/Sample RSDs.")
-    print(f"Saved all results:\n - Imputed: {output_path_full}\n - Filtered: {output_path_filtered}\n - Removed QC>threshold: {output_path_removed}")
+    print(f"Saved all results:\n - Imputed: {output_path_full}\n - Filtered: {output_path_filtered}\n - Removed QC>threshold: {output_path_removed}\n")
 
     return output_path_filtered
 
@@ -208,7 +212,7 @@ def impute_missing_values(final_csv, group_csv, output_folder="results",
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Impute missing values, recompute stats, and apply QC RSD filtering.")
-    parser.add_argument("--final", required=True, help="Path to Final_search_results.csv")
+    parser.add_argument("--final", required=True, help="Path to Final_MS_results.csv")
     parser.add_argument("--groups", required=True, help="Path to sample_groups.csv")
     parser.add_argument("--out", default="results", help="Output folder")
     args = parser.parse_args()

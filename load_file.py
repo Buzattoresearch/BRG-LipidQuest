@@ -26,6 +26,7 @@ def read_metaboscape_table(path, sheet_name=None, index_col=None):
 
 def load_headgroup_to_class(mapping_path):
     """Load the Headgroup_to_class mapping file and return a dict {headgroup: subclass}."""
+    print(f'\nLoading the results file...\n')
     df_map = pd.read_csv(mapping_path, encoding="latin1")
     mapping = {}
 
@@ -267,7 +268,7 @@ def sanitize_file(
                     columns=["Group", "Median RSD (%)"]
                 )
                 summary_df.to_csv(Path(output_folder) / "debug" / "RSD_summary_by_group.csv", index=False)
-                print(f"Saved RSD summary table → {output_folder}/RSD_summary_by_group.csv")
+                print(f"Saved RSD summary table → {output_folder}/debug/RSD_summary_by_group.csv")
 
         except Exception as e:
             print(f"[WARNING] Failed to generate RSD summary plot: {e}")
@@ -383,8 +384,8 @@ def sanitize_file(
         debug_folder = output_folder / "debug"
         debug_folder.mkdir(parents=True, exist_ok=True)
 
-        output_path = output_folder / f"{path.stem}_sanitized.csv"
-        output_path_clean = output_folder / f"{path.stem}_clean.csv"
+        output_path = debug_folder / f"{path.stem}_sanitized.csv"
+        output_path_clean = debug_folder / f"{path.stem}_clean.csv"
         output_path_cleansed = debug_folder / f"{path.stem}_removed_contaminants.csv"
         output_path_baseline = debug_folder / f"{path.stem}_removed_baseline.csv"
 
@@ -393,9 +394,9 @@ def sanitize_file(
         removed_df.to_csv(output_path_cleansed, index=False, encoding="utf-8-sig")
         baseline_df.to_csv(output_path_baseline, index=False, encoding="utf-8-sig")
     else:
-        output_path = path.with_name(f"{path.stem}_sanitized.csv")
+        output_path = path.with_name(f"/debug/{path.stem}_sanitized.csv")
         df.to_csv(output_path, index=False, encoding="utf-8-sig")
-        output_path_clean = path.with_name(f"{path.stem}_clean.csv")
+        output_path_clean = path.with_name(f"/debug/{path.stem}_clean.csv")
         df_clean.to_csv(output_path_clean, index=False, encoding="utf-8-sig")
 
     return output_path, output_path_clean, df

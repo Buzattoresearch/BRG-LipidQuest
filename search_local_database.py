@@ -110,6 +110,8 @@ def search_local_database(file_path, output_folder, mz_tolerance_ppm=3,
     file_path = Path(file_path)
     df_input = pd.read_csv(file_path)
 
+    print('\nRunning MS search against local database...\n')
+
     # Pick annotation column
     annotation_col = None
     for col in ["Annotation", "Name"]:

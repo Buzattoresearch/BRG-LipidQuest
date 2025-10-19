@@ -14,7 +14,7 @@ def apply_plausability_filter(df, output_folder, mode="MS", row_type="Annotation
     Apply organism plausibility filters to a pandas DataFrame.
     Saves removed rows (with reason) to CSV and returns filtered DataFrame.
     """
-    print('\n\n -----------  APPLYING FILTERS FOR BACTERIA --------- \n\n')
+    print('\n\n -----------  APPLYING FILTERS FOR MAMMALIANS --------- \n\n')
     
     removal_reasons = Counter()
     removed_rows = []

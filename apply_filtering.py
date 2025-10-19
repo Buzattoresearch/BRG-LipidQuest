@@ -1,4 +1,3 @@
-# TODO: add adduct handling
 """
     Lipid filtering pipeline:
     1. Load raw search results
@@ -36,7 +35,6 @@ def collapse_duplicates(df):
          selected by highest MS Score.
     Rows without a UniqueID are preserved.
     """
-
     # Preconditions
     if "UniqueID" not in df.columns or "Annotation" not in df.columns:
         return df.copy()
@@ -182,6 +180,7 @@ def apply_kendrick_filter(
     Keeps rows where KMD is within ±kmd_deviation of the class median.
     Classes with ≤ min_class_size entries are left unfiltered.
     """
+    print(f'\nApplying Kendrick Mass Defect filtering... \n')
 
     df = df.copy()
     removed_rows = []
@@ -249,7 +248,8 @@ def run_pipeline(input_csv, output_folder, min_score=70, scoring_module="scoring
     # Dynamically import scoring & plausibility logic
     scoring = importlib.import_module(scoring_module)
     plausibility = importlib.import_module(plausibility_module)
-    
+
+    print(f'\nFiltering annotations... \n')
     
     """
     Lipid filtering pipeline with debug printouts of unassigned counts.
@@ -385,7 +385,7 @@ def run_pipeline(input_csv, output_folder, min_score=70, scoring_module="scoring
     input_path = Path(input_csv)
     scored_name = f"{input_path.stem}_scored.csv"   # gives raw_ms_search_results_scored.csv
     scored_path = debug_folder / scored_name
-    final_path = output_path / "1-Final_search_results.csv"
+    final_path = debug_folder / "1-Final_MS_results.csv"
 
     df_scored.to_csv(scored_path, index=False, encoding="utf-8-sig")
     df_final.to_csv(final_path, index=False, encoding="utf-8-sig")
@@ -399,14 +399,14 @@ def run_pipeline(input_csv, output_folder, min_score=70, scoring_module="scoring
             internal_standards_df.to_csv(internal_standards_path, index=False, encoding="utf-8-sig")
             print(f"Internal standards table saved to: {internal_standards_path}", flush = True)
         else:
-            print("No internal standards detected in Final_search_results.", flush = True)
+            print("No internal standards detected in 1-Final_MS_results.", flush = True)
             
         # --- Generate internal standard plots ---
         try:
             plot_internal_standards(internal_standards_csv=internal_standards_path, output_folder=output_path)
             print(f"\n ----- Internal standard plots saved to ({output_folder}) ----- \n", flush = True)
         except Exception as e:
-            print(f"Warning: could not generate internal standard plots ({e})", flush = True)
+            print(f"\n\n ======= Warning: could not generate internal standard plots ({e}) ========\n\n", flush = True)
     
     else:
         print("Warning: 'Annotation Type' column not found; skipping internal standards export.", flush = True)
@@ -425,7 +425,7 @@ def run_pipeline(input_csv, output_folder, min_score=70, scoring_module="scoring
     try:
         plot_results(input_csv = kept_path, output_folder=output_folder)
     except:
-        print("Plot results failed.", flush = True)
+        print("\n\n ======= Plot results failed. ========\n\n", flush = True)
     # try:
     plot_kendrick_mass_vs_defect(input_csv = kept_path, results_folder = output_folder)
     # except:

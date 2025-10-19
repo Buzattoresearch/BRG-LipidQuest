@@ -1,5 +1,4 @@
 # ---------------------------------------------------------------------
-# loess_normalization.py
 # LOESS-based drift correction for LC-MS lipidomics datasets
 # ---------------------------------------------------------------------
 import pandas as pd
@@ -13,6 +12,13 @@ from sklearn.preprocessing import StandardScaler
 
 from normalization import evaluate_normalization_performance
 
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message=".*is_sparse is deprecated.*",
+    category=FutureWarning
+)
+
 def loess_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_folder="results", frac=0.3):
     """
     Apply LOESS drift correction using QC samples over injection order.
@@ -20,7 +26,7 @@ def loess_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_f
     Parameters
     ----------
     annotated_csv: str or Path
-        Path to dataset (e.g., Final_search_results_imputed_filtered.csv or normalized file)
+        Path to dataset (e.g., Final_annotated_results_imputed_filtered.csv or normalized file)
     sample_groups_csv : str or Path
         Path to sample_groups.csv with 'Sample', 'Group', and 'Order' columns
     output_folder : str or Path
@@ -33,7 +39,7 @@ def loess_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_f
     out_path : Path
         Path to LOESS-corrected output file
     """
-    print("\n[STEP] Starting LOESS drift correction...", flush=True)
+    print("\nStarting LOESS drift correction...\n", flush=True)
     annotated_csv = Path(annotated_csv)
     sample_groups_csv = Path(sample_groups_csv)
     output_folder = Path(output_folder)
@@ -67,7 +73,7 @@ def loess_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_f
     # LOESS correction per feature
     # -----------------------------------------------------------------
     corrected_df = df.copy()
-    drift_plots_folder = output_folder / "loess_normalization"
+    drift_plots_folder = output_folder / "debug" / "loess_normalization"
     drift_plots_folder.mkdir(exist_ok=True)
 
     for idx, row in df.iterrows():
@@ -223,21 +229,17 @@ def loess_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_f
     ordered_cols = [c for c in core_cols if c in corrected_df.columns] + sample_cols
     corrected_df = corrected_df[[c for c in ordered_cols if c in corrected_df.columns]]
 
-    out_path = output_folder / "6-Final_search_results_loess_normalized.csv"
-    corrected_df.to_csv(out_path, index=False, encoding="utf-8-sig")
-    print(f"[DONE] Saved LOESS-corrected file: {out_path}", flush=True)
-
     # -----------------------------------------------------------------
     # Save corrected data
     # -----------------------------------------------------------------
-    out_path = output_folder / "6-Final_search_results_loess_normalized.csv"
+    out_path = output_folder / "debug" /"9-Final_annotated_results_loess_normalized.csv"
     corrected_df.to_csv(out_path, index=False, encoding="utf-8-sig")
     print(f"[DONE] Saved LOESS-corrected file: {out_path}", flush=True)
 
     # -----------------------------------------------------------------
     # Evaluate performance
     # -----------------------------------------------------------------
-    eval_folder = output_folder / "loess_normalization"
+    eval_folder = output_folder / "debug" / "loess_normalization"
     eval_folder.mkdir(exist_ok=True)
 
     try:
@@ -263,7 +265,7 @@ def loess_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_f
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Apply LOESS drift correction using QC samples.")
-    parser.add_argument("--features", required=True, help="Path to the input CSV (e.g., Final_search_results_imputed_filtered.csv).")
+    parser.add_argument("--features", required=True, help="Path to the input CSV (e.g., Final_annotated_results_imputed_filtered.csv).")
     parser.add_argument("--groups", required=True, help="Path to sample_groups.csv (must include 'Order').")
     parser.add_argument("--out", default="results", help="Output folder.")
     parser.add_argument("--frac", type=float, default=0.3, help="LOESS smoothing fraction (default=0.3).")

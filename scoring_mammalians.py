@@ -219,6 +219,8 @@ def apply_scoring(df, output_folder, weights=None):
             "abbreviation_score_weight": 10.0,
         }
 
+    print('\n\n -----------  APPLYING SCORES FOR MAMMALIANS --------- \n\n')
+
     # Split into assigned and unassigned
     ann = df["Annotation"].astype(str).str.strip()
     unassigned = df[ann.eq("") | ann.eq("nan") | df["Annotation"].isna()].copy()

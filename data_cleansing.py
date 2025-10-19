@@ -63,9 +63,9 @@ def _row_is_internal_standard(row, is_columns=("IS","Type","Sample Type")):
 def detect_flat_features(
     df: pd.DataFrame,
     prefix="[POS",
-    rel_std_thresh=0.075,
-    intensity_quantile_low=0.90,
-    intensity_quantile_high=0.999,
+    rel_std_thresh=0.05,
+    intensity_quantile_low=1,
+    intensity_quantile_high=0.998,
     debug_folder=None,
     plot=True,
     exclude_is=True,
@@ -86,10 +86,11 @@ def detect_flat_features(
     exclude_is : bool
         Skip internal standards (IS) from removal.
     """
+    print(f'\nRemoving flat-intensity features (baseline contaminants or saturated features)... \n')
 
     sample_cols = [c for c in df.columns if str(c).startswith(prefix)]
     if not sample_cols:
-        print(f"No sample columns found starting with '{prefix}'. Skipping baseline detection.")
+        print(f"\n\n===== No sample columns found starting with '{prefix}'. Skipping baseline detection. ===== \n")
         return [], pd.DataFrame(columns=df.columns)
 
     # Compute per-feature mean intensity and RSD
@@ -222,6 +223,8 @@ def apply_data_cleansing(
     output_folder = Path(output_folder)
     debug_folder = output_folder / "debug"
     debug_folder.mkdir(parents=True, exist_ok=True)
+
+    print(f'\nApplying data cleansing... \n')
 
     if rsd_thresh is None:
         rsd_thresh = 0.075
@@ -616,5 +619,5 @@ def apply_data_cleansing(
 
     print(f"Removed {len(removed_known)} known contaminants and {len(baseline_df)} baseline features. "
           f"Kept {len(df_clean)} rows.", flush = True)
-
+    print(f'\nData cleansing complete.\n')
     return df_clean, removed_known, baseline_df

@@ -13,6 +13,7 @@ from pathlib import Path
 
 def load_adduct_sensitivity(path):
     # Skip the first grouping row, use second row as header
+
     df = pd.read_csv(path, header=[1])
 
     ion_score_dict = {"Pos": {}, "Neg": {}}
@@ -267,6 +268,8 @@ def apply_scoring(df, output_folder, weights=None):
             "fa_score_weight": 1.0,
             "abbreviation_score_weight": 10.0,
         }
+
+    print('\n\n -----------  APPLYING SCORES FOR BACTERIA --------- \n\n')
 
     # Split into assigned and unassigned
     ann = df["Annotation"].astype(str).str.strip()

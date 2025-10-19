@@ -1,5 +1,4 @@
 # ---------------------------------------------------------------------
-# median_normalization.py
 # Within-class median normalization (annotated) and
 # global median normalization (unknowns), each evaluated separately.
 # ---------------------------------------------------------------------
@@ -11,6 +10,13 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from normalization import evaluate_normalization_performance
 
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message=".*is_sparse is deprecated.*",
+    category=FutureWarning
+)
+
 
 def median_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_folder="results"):
     """
@@ -18,7 +24,7 @@ def median_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_
     and global median normalization for unknowns.
     Evaluate each output separately.
     """
-    print("\n[STEP] Starting median-based normalization...", flush=True)
+    print("\nStarting median-based normalization...\n", flush=True)
     annotated_csv = Path(annotated_csv)
     unknowns_csv = Path(unknowns_csv)
     sample_groups_csv = Path(sample_groups_csv)
@@ -126,7 +132,7 @@ def median_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_
     ordered_cols = [c for c in core_cols if c in norm_ann.columns] + sample_cols
     norm_ann = norm_ann[[c for c in ordered_cols if c in norm_ann.columns]]
 
-    out_ann = output_folder / "5-Final_search_results_median_normalized.csv"
+    out_ann = output_folder / "debug" / "7-Final_annotated_results_median_normalized.csv"
     norm_ann.to_csv(out_ann, index=False, encoding="utf-8-sig")
     print(f"[INFO] Saved annotated median-normalized file: {out_ann}", flush=True)
 
@@ -141,7 +147,7 @@ def median_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_
             denom = global_medians[col]
             norm_unk[col] = norm_unk[col] / denom if pd.notna(denom) and denom != 0 else np.nan
 
-        out_unk = output_folder / "5-Final_unknowns_median_normalized.csv"
+        out_unk = output_folder / "debug" / "8-Final_unknowns_median_normalized.csv"
         norm_unk.to_csv(out_unk, index=False, encoding="utf-8-sig")
         print(f"[INFO] Saved unknowns median-normalized file: {out_unk}", flush=True)
     else:
@@ -151,7 +157,7 @@ def median_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_
     # --------------------------------------------------------------
     # Step 3: Evaluate normalization performance
     # --------------------------------------------------------------
-    eval_base = output_folder / "median_normalization"
+    eval_base = output_folder / "debug" / "median_normalization"
     eval_base.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -193,7 +199,7 @@ def median_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Within-class and global median normalization (separate outputs).")
-    parser.add_argument("--annotated", required=True, help="Path to Final_search_results_normalized.csv")
+    parser.add_argument("--annotated", required=True, help="Path to Final_annotated_results_normalized.csv")
     parser.add_argument("--unknowns", required=True, help="Path to Final_unknowns.csv")
     parser.add_argument("--groups", required=True, help="Path to sample_groups.csv")
     parser.add_argument("--out", default="results", help="Output folder")

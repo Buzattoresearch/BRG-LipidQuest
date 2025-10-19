@@ -1,5 +1,3 @@
-# TODO: Check normalization performance.
-# Apply filtering by QC RSD again after normalization?
 
 # ---------------------------------------------------------------------
 # Class-matched internal standard normalization for lipidomics datasets
@@ -10,6 +8,13 @@ import numpy as np
 from pathlib import Path
 import sys
 sys.stdout.reconfigure(encoding='utf-8')  # ensures full UTF-8 output even on Windows
+
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message=".*is_sparse is deprecated.*",
+    category=FutureWarning
+)
 
 # ---------------------------------------------------------------------
 # Normalization evaluation utilities
@@ -25,9 +30,10 @@ def calculate_qc_rsd_post_norm(normalized_csv, sample_groups_csv, output_folder=
     Calculate QC RSD (%) for each feature after normalization
     using the same QC column logic as in the normalization step.
     """
+    print(f'\nStarting internal standard normalization...\n')
     df = pd.read_csv(normalized_csv)
     group_df = pd.read_csv(sample_groups_csv)
-    output_folder = Path(output_folder) / "normalization"
+    output_folder = Path(output_folder) / "debug" /"normalization"
     output_folder.mkdir(parents=True, exist_ok=True)
 
     # Identify QC samples from sample_groups.csv
@@ -69,7 +75,7 @@ def calculate_qc_rsd_post_norm(normalized_csv, sample_groups_csv, output_folder=
 
     df["RSD QCs (%) post-norm"] = qc_rsd
 
-    out_path = output_folder / "Final_search_results_normalized_with_QC_RSD.csv"
+    out_path = output_folder / "Final_annotated_results_normalized_with_QC_RSD.csv"
     df.to_csv(out_path, index=False, encoding="utf-8-sig")
 
     median_rsd = np.nanmedian(df["RSD QCs (%) post-norm"])
@@ -84,7 +90,7 @@ def plot_rsd_distributions(imputed_filtered_csv, normalized_with_rsd_csv, output
     """
     df_before = pd.read_csv(imputed_filtered_csv)
     df_after = pd.read_csv(normalized_with_rsd_csv)
-    output_folder = Path(output_folder) / "normalization"
+    output_folder = Path(output_folder) /"debug" / "normalization"
     output_folder.mkdir(parents=True, exist_ok=True)
 
     # --- Normalize column names ---
@@ -149,7 +155,7 @@ def plot_pca_before_after(imputed_filtered_csv, normalized_with_rsd_csv, sample_
     df_before = pd.read_csv(imputed_filtered_csv)
     df_after = pd.read_csv(normalized_with_rsd_csv)
     group_df = pd.read_csv(sample_groups_csv)
-    output_folder = Path(output_folder) / "normalization"
+    output_folder = Path(output_folder) / "debug" / "normalization"
     output_folder.mkdir(parents=True, exist_ok=True)
 
     sample_cols = [c for c in df_before.columns if c.startswith("[POS") or c.startswith("[NEG]")]
@@ -550,12 +556,13 @@ def normalize_by_internal_standards(
     # -----------------------------------------------------------------
     if "Annotation" in norm_df.columns:
         # Identify empty or NaN annotations
-        unknown_mask = norm_df["Annotation"].isna() | (norm_df["Annotation"].astype(str).str.strip() == "")
+        unknown_mask = norm_df["Annotation"].astype(str).str.strip().isin(
+            ["", "nan", "NaN", "N/A", "Unassigned", "No match", "None", "_", "Unknown"])
         unknown_df = norm_df[unknown_mask].copy()
         annotated_df = norm_df[~unknown_mask].copy()
 
-        unknown_path = output_folder / "4-Final_unknowns.csv"
-        annotated_path = output_folder / "4-Final_search_results_normalized.csv"
+        unknown_path = output_folder / "debug" / "6-Final_unknowns.csv"
+        annotated_path = output_folder / "debug" / "5-Final_annotated_results_normalized.csv"
 
         unknown_df.to_csv(unknown_path, index=False, encoding="utf-8-sig")
         annotated_df.to_csv(annotated_path, index=False, encoding="utf-8-sig")
@@ -567,10 +574,6 @@ def normalize_by_internal_standards(
         norm_df = annotated_df
     else:
         print("[WARNING] 'Annotation' column missing — skipping unknown separation.", flush=True)
-
-    # --- Save output ---
-    out_path = output_folder / "3-Final_search_results_normalized.csv"
-    norm_df.to_csv(out_path, index=False, encoding="utf-8-sig")
 
     # -----------------------------------------------------------------
     # Evaluate normalization performance automatically
@@ -595,7 +598,7 @@ def normalize_by_internal_standards(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Normalize lipidomics data by class-matched internal standards.")
-    parser.add_argument("--features", required=True, help="Path to Final_search_results_imputed_filtered.csv")
+    parser.add_argument("--features", required=True, help="Path to Final_annotated_results_imputed_filtered.csv")
     parser.add_argument("--isfile", required=True, help="Path to Internal_standards.csv")
     parser.add_argument("--classmap", required=True, help="Path to Class_to_internal_standards.csv")
     parser.add_argument("--out", default="results", help="Output folder")
