@@ -31,8 +31,8 @@ def calculate_qc_rsd_post_norm(normalized_csv, sample_groups_csv, output_folder=
     using the same QC column logic as in the normalization step.
     """
     print(f'\nStarting internal standard normalization...\n')
-    df = pd.read_csv(normalized_csv)
-    group_df = pd.read_csv(sample_groups_csv)
+    df = pd.read_csv(normalized_csv, low_memory=False)
+    group_df = pd.read_csv(sample_groups_csv, low_memory=False)
     output_folder = Path(output_folder) / "debug" /"normalization"
     output_folder.mkdir(parents=True, exist_ok=True)
 
@@ -88,8 +88,8 @@ def plot_rsd_distributions(imputed_filtered_csv, normalized_with_rsd_csv, output
     Plot boxplot and histogram comparing RSD QCs before and after normalization.
     Handles column name inconsistencies robustly.
     """
-    df_before = pd.read_csv(imputed_filtered_csv)
-    df_after = pd.read_csv(normalized_with_rsd_csv)
+    df_before = pd.read_csv(imputed_filtered_csv, low_memory=False)
+    df_after = pd.read_csv(normalized_with_rsd_csv, low_memory=False)
     output_folder = Path(output_folder) /"debug" / "normalization"
     output_folder.mkdir(parents=True, exist_ok=True)
 
@@ -152,9 +152,9 @@ def plot_pca_before_after(imputed_filtered_csv, normalized_with_rsd_csv, sample_
     """
     PCA visualization of samples before and after normalization.
     """
-    df_before = pd.read_csv(imputed_filtered_csv)
-    df_after = pd.read_csv(normalized_with_rsd_csv)
-    group_df = pd.read_csv(sample_groups_csv)
+    df_before = pd.read_csv(imputed_filtered_csv, low_memory=False)
+    df_after = pd.read_csv(normalized_with_rsd_csv, low_memory=False)
+    group_df = pd.read_csv(sample_groups_csv, low_memory=False)
     output_folder = Path(output_folder) / "debug" / "normalization"
     output_folder.mkdir(parents=True, exist_ok=True)
 
@@ -211,7 +211,7 @@ def evaluate_normalization_performance(imputed_filtered_csv, normalized_csv, sam
         )
 
         # Load before-normalization data
-        df_before = pd.read_csv(imputed_filtered_csv)
+        df_before = pd.read_csv(imputed_filtered_csv, low_memory=False)
         df_before.columns = df_before.columns.str.strip().str.replace("\xa0", " ", regex=False)
         df_after.columns = df_after.columns.str.strip().str.replace("\xa0", " ", regex=False)
 
@@ -275,9 +275,9 @@ def normalize_by_internal_standards(
     output_folder.mkdir(parents=True, exist_ok=True)
 
     # --- Load data ---
-    features_df = pd.read_csv(features_csv)
-    is_df = pd.read_csv(internal_standards_csv)
-    class_map = pd.read_csv(class_to_is_csv)
+    features_df = pd.read_csv(features_csv, low_memory=False)
+    is_df = pd.read_csv(internal_standards_csv, low_memory=False)
+    class_map = pd.read_csv(class_to_is_csv, low_memory=False)
 
     # --- Identify sample columns (intensity columns that start with [POS or [NEG) ---
     sample_cols = [c for c in features_df.columns if c.startswith("[POS") or c.startswith("[NEG")]
@@ -288,7 +288,7 @@ def normalize_by_internal_standards(
     group_file = Path(output_folder) / "sample_groups.csv"
     if not group_file.exists():
         raise FileNotFoundError("sample_groups.csv not found in output folder.")
-    group_df = pd.read_csv(group_file)
+    group_df = pd.read_csv(group_file, low_memory=False)
 
     # Identify QC samples from GUI assignment
     qc_samples = group_df.loc[group_df["Group"].str.upper().str.strip() == "QC", "Sample"].tolist()
@@ -541,7 +541,9 @@ def normalize_by_internal_standards(
         "RSD QCs (%)", "RSD Samples (%)", "RSD_12x [%]", "RSD_15x [%]", "RSD_5x [%]", "RSD_8x [%]",
         "RSD_QC [%]", "MS/MS available?", "Annotation", "Annotation Type",
         "Metaboscape Annotation Status", "Annotation Source", "Headgroup", "Lipid Class",
-        "Δm/z (mDa)", "Δm/z (ppm)", "MS/MS score", "Annotation tier", "mSigma", "Molecular Formula",
+        "Δm/z (mDa)", "Δm/z (ppm)", "MS/MS score", "Annotation tier", "mSigma", 
+        "CCS (Å²)", "Mob. 1/K0", "ΔCCS [%]",
+        "Molecular Formula",
         "Plasmenyl?", "Number of carbons in fatty acyls", "Double bond equivalents",
         "Chain type", "PUFA?", "Modifications", "# of modifications", "Oxidized?",
         "Carbons / double bond equivalent ratio", "Average Intensity (all samples)",

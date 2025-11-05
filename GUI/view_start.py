@@ -30,11 +30,11 @@ warnings.filterwarnings(
 class GroupAssignmentWindow(tk.Toplevel):
     def __init__(self, parent, sample_names, output_folder, callback_on_save):
         super().__init__(parent)
-        self.title("Assign Sample Groups and Injection Order")
+        self.title("Assign sample groups and injection order.")
         self.configure(bg="white")
         self.update_idletasks()
-        w = 800
-        h = 600
+        w = 850
+        h = 800
         x = (self.winfo_screenwidth() // 2) - (w // 2)
         y = (self.winfo_screenheight() // 2) - (h // 2)
         self.geometry(f"{w}x{h}+{x}+{y}")
@@ -47,7 +47,7 @@ class GroupAssignmentWindow(tk.Toplevel):
 
         tk.Label(
             self,
-            text="Assign a group and injection order to each sample",
+            text="Assign a group and injection order to each sample.\nA CSV file can also be used for group assignment (output path/sample_groups.csv).",
             bg="white",
             font=("Segoe UI", 10, "bold")
         ).pack(pady=(10, 5))
@@ -393,6 +393,8 @@ class MetaboscapeApp:
         if filepath:
             self.selected_file = filepath
             self.input_var.set(filepath)
+            with open("last_file_path.txt", "w") as f:
+                f.write(filepath)
             self.check_group_status()
 
     def select_output_folder(self):
@@ -473,7 +475,52 @@ class MetaboscapeApp:
             if not sample_cols:
                 messagebox.showinfo("No Samples Detected", "No columns starting with [POS or [NEG] were found.")
                 return
+            
+            # --- Write sample_groups.csv scaffold ---
+            out_path = Path(self.output_folder) / "sample_groups.csv"
+
+            # Preserve any existing assignments; add new samples with blanks
+            prev = {}
+            if out_path.exists():
+                try:
+                    df_prev = pd.read_csv(out_path)
+                    prev = {
+                        s: (g, o)
+                        for s, g, o in zip(
+                            df_prev["Sample"],
+                            df_prev["Group"],
+                            df_prev.get("Order", [None] * len(df_prev))
+                        )
+                    }
+                except Exception:
+                    prev = {}
+
+            def _safe_int(x):
+                try:
+                    if x is None or (isinstance(x, float) and pd.isna(x)):
+                        return None
+                    xs = str(x).strip()
+                    if xs == "":
+                        return None
+                    return int(float(xs))
+                except Exception:
+                    return None
+
+            rows = []
+            for s in sample_cols:
+                g, o = prev.get(s, ("", None))
+                o = _safe_int(o)
+                rows.append((s, g, o))
+
+            df = pd.DataFrame(rows, columns=["Sample", "Group", "Order"])
+            df.to_csv(out_path, index=False, encoding="utf-8-sig")
+
+            # reflect the new file in the UI immediately
+            self.check_group_status()
+
+            # then open the editor
             GroupAssignmentWindow(self.root, sample_cols, self.output_folder, callback_on_save=self.check_group_status)
+
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load file:\n{e}")
 
@@ -719,7 +766,7 @@ class MetaboscapeApp:
                 f"Raw search results:\n{final_path}\n\n"
                 f"Scored results:\n{scored_path}\n\n"
                 f"Filtered results:\n{filtered_path}\n\n"
-                f"Final annotated:\n{annotated_path}\n"
+                f"Final annotated:\n{annotated_path}\n\n"
                 f"Final unknowns:\n{unknowns_path}"
             )
 
@@ -838,7 +885,7 @@ class MetaboscapeApp:
                 f"Processing complete ({method_used}).\n\n"
                 f"Scored results:\n{scored_path}\n\n"
                 f"Filtered results:\n{filtered_path}\n\n"
-                f"Final annotated:\n{annotated_path}\n"
+                f"Final annotated:\n{annotated_path}\n\n"
                 f"Final unknowns:\n{unknowns_path}"
                 f"{message_extra}"
             )
@@ -932,7 +979,7 @@ class MetaboscapeApp:
             
             self.finish_processing(
                 f"Processing complete ({method_used}).\n\n"
-                f"Final annotated:\n{annotated_path}\n"
+                f"Final annotated:\n{annotated_path}\n\n"
                 f"Final unknowns:\n{unknowns_path}"
             )
             

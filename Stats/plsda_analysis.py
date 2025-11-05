@@ -19,6 +19,29 @@ plt.rcParams['font.size'] = 12
 # ==========================================================
 # Helper functions
 # ==========================================================
+def make_distinct_palette(groups):
+    """Return a dict {group: rgb} with enough distinct colors."""
+    groups = list(groups)
+    n = len(groups)
+
+    if n <= 10:
+        base = sns.color_palette("tab10", n_colors=n)
+    elif n <= 20:
+        base = sns.color_palette("tab20", n_colors=n)
+    elif n <= 32:
+        # tab20 + tab20b + tab20c concatenated
+        base = (
+            sns.color_palette("tab20", 20)
+            + sns.color_palette("tab20b", 20)[:6]
+            + sns.color_palette("tab20c", 20)[:6]
+        )
+        base = base[:n]
+    else:
+        # Arbitrary many, still reasonably distinct
+        base = sns.husl_palette(n, s=.9, l=.55)
+
+    return {g: base[i] for i, g in enumerate(groups)}
+        
 def get_cov_ellipse(cov, center, nstd=1.96, **kwargs):
     eigvals, eigvecs = np.linalg.eigh(cov)
     order = eigvals.argsort()[::-1]
@@ -199,23 +222,33 @@ def run_plsda(file_path, group_file, save_dir):
     # SCORES PLOT
     # ==========================================================
     plt.figure(figsize=(9, 6))
-    palette = sns.color_palette("pastel", len(y_labels.unique()))
+    groups = list(pd.unique(y_labels))  # stable order
+    color_map = make_distinct_palette(groups)
+
     ax = sns.scatterplot(
         data=plsda_df,
         x='Component 1', y='Component 2',
-        hue='Group', palette=palette,
-        s=100, alpha=0.9, edgecolor='black'
+        hue='Group',
+        palette=color_map,   # dict → stable colors even with many groups
+        s=100, alpha=0.95, edgecolor='black'
     )
 
-    # 95% confidence ellipses
-    for group, color in zip(y_labels.unique(), palette):
-        subset = plsda_df[plsda_df['Group'] == group][['Component 1', 'Component 2']]
+    # 95% confidence ellipses using the same colors
+    for group in groups:
+        color = color_map[group]
+        subset = plsda_df.loc[plsda_df['Group'] == group, ['Component 1', 'Component 2']]
         if len(subset) < 3:
             continue
         cov = np.cov(subset.T)
         center = subset.mean().values
-        ellipse = get_cov_ellipse(cov, center, nstd=1.96, facecolor=color, alpha=0.15)
-        ax.add_patch(ellipse)
+        try:
+            ellipse = get_cov_ellipse(
+                cov, center, nstd=1.96,
+                facecolor=color, edgecolor=color, alpha=0.18, linewidth=1
+            )
+            ax.add_patch(ellipse)
+        except Exception:
+            pass
 
     # Expand limits slightly for clarity
     xlims, ylims = ax.get_xlim(), ax.get_ylim()

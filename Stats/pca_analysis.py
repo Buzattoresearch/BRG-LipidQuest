@@ -1,5 +1,6 @@
 # TODO: plots are missing the F stats
 # TODO: the plots without outliers are not being generated
+#TODO: more colours!
 
 import os
 import warnings
@@ -23,6 +24,42 @@ plt.rcParams['font.size'] = 12
 # ==========================================================
 # Helper functions
 # ==========================================================
+def make_distinct_palette(groups):
+    """Return a dict {group: rgb} with enough distinct colors.
+    - QC (any case) is always black and does not consume a color slot.
+    - Supports many classes via tab palettes + HUSL fallback.
+    """
+    groups = [str(g) for g in groups]
+    # preserve order of first appearance
+    unique_in_order = list(dict.fromkeys(groups))
+
+    # separate QC from others
+    non_qc = [g for g in unique_in_order if g.lower() != "qc"]
+    has_qc = any(g.lower() == "qc" for g in unique_in_order)
+
+    n = len(non_qc)
+    if n <= 10:
+        base = sns.color_palette("tab10", n_colors=n)
+    elif n <= 20:
+        base = sns.color_palette("tab20", n_colors=n)
+    elif n <= 32:
+        base = (
+            sns.color_palette("tab20", 20)
+            + sns.color_palette("tab20b", 20)
+            + sns.color_palette("tab20c", 20)
+        )[:n]
+    else:
+        # reasonably distinct for large n
+        base = sns.husl_palette(n, s=0.9, l=0.55)
+
+    cmap = {g: base[i] for i, g in enumerate(non_qc)}
+    if has_qc:
+        # assign black to every QC label variant present
+        for g in unique_in_order:
+            if g.lower() == "qc":
+                cmap[g] = "#000000"
+    return cmap
+
 def get_cov_ellipse(cov, center, nstd=1.96, **kwargs):
     eigvals, eigvecs = np.linalg.eigh(cov)
     order = eigvals.argsort()[::-1]
@@ -122,27 +159,33 @@ def run_pca(file_path, group_file, save_dir):
 
     # === Plot PCA ===
     plt.figure(figsize=(9, 6))
-    palette = sns.color_palette("pastel", len(y.unique()))
+    groups_order = list(pca_df["Group"].astype(str).unique())
+    color_map = make_distinct_palette(groups_order)
+
     ax = sns.scatterplot(
         data=pca_df,
         x="PC1", y="PC2",
         hue="Group",
-        palette=palette,
-        s=90, alpha=0.9, edgecolor="black"
+        hue_order=groups_order,
+        palette=color_map,          # dict palette
+        s=90, alpha=0.95, edgecolor="black"
     )
 
-    # Add 95% confidence ellipses
-    for group, color in zip(y.unique(), palette):
-        data_g = pca_df[pca_df["Group"] == group][["PC1", "PC2"]]
+    # Ellipses use the same colors
+    for group in groups_order:
+        data_g = pca_df.loc[pca_df["Group"] == group, ["PC1", "PC2"]]
         if len(data_g) < 3:
             continue
         cov = np.cov(data_g.T)
         center = data_g.mean().values
+        color = color_map.get(group, (0.5, 0.5, 0.5))
         try:
-            ellipse = get_cov_ellipse(cov, center, nstd=1.96, facecolor=color, alpha=0.15)
+            ellipse = get_cov_ellipse(cov, center, nstd=1.96,
+                                    facecolor=color, alpha=0.18,
+                                    edgecolor=color, linewidth=1)
             ax.add_patch(ellipse)
         except Exception:
-            continue
+            pass
 
     # Labels, title, legend
     plt.xlabel(f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f}% Variance)", labelpad = 12)
@@ -196,26 +239,33 @@ def run_pca(file_path, group_file, save_dir):
 
     # === PCA with sample labels ===
     plt.figure(figsize=(9, 6))
+    groups_order = list(pca_df["Group"].astype(str).unique())
+    color_map = make_distinct_palette(groups_order)
+
     ax = sns.scatterplot(
         data=pca_df,
         x="PC1", y="PC2",
         hue="Group",
-        palette=palette,
-        s=90, alpha=0.9, edgecolor="black"
+        hue_order=groups_order,
+        palette=color_map,          # dict palette
+        s=90, alpha=0.95, edgecolor="black"
     )
 
-    # 95% confidence ellipses again
-    for group, color in zip(y.unique(), palette):
-        data_g = pca_df[pca_df["Group"] == group][["PC1", "PC2"]]
+    # Ellipses use the same colors
+    for group in groups_order:
+        data_g = pca_df.loc[pca_df["Group"] == group, ["PC1", "PC2"]]
         if len(data_g) < 3:
             continue
         cov = np.cov(data_g.T)
         center = data_g.mean().values
+        color = color_map.get(group, (0.5, 0.5, 0.5))
         try:
-            ellipse = get_cov_ellipse(cov, center, nstd=1.96, facecolor=color, alpha=0.15)
+            ellipse = get_cov_ellipse(cov, center, nstd=1.96,
+                                    facecolor=color, alpha=0.18,
+                                    edgecolor=color, linewidth=1)
             ax.add_patch(ellipse)
         except Exception:
-            continue
+            pass
 
     # Add sample labels slightly offset from points
     for sample_name, row in pca_df.iterrows():

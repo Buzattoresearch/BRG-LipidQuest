@@ -20,7 +20,7 @@ def plot_internal_standards(
     individual_folder.mkdir(exist_ok=True)
 
     # --- Load data ---
-    df = pd.read_csv(internal_standards_csv)
+    df = pd.read_csv(internal_standards_csv, low_memory=False)
     if df.empty:
         print("No internal standards found. Skipping plotting.")
         return

@@ -18,9 +18,9 @@ def clean_sample_name(name: str) -> str:
     cleaned = re.sub(r"\[?POS\]?|\[?NEG\]?", "", cleaned, flags=re.IGNORECASE)  # remove [POS]/[NEG]
     cleaned = re.sub(r"^(P_|N_)", "", cleaned)  # remove leading polarity letters
     cleaned = re.split(r"_P[12]", cleaned)[0]   # truncate after _P1/_P2
-    cleaned = re.sub(r"_[0-9]+(_[0-9]+)*$", "", cleaned)  # remove trailing run IDs like _1_490
-    cleaned = re.sub(r"[_\-]+$", "", cleaned)
-    cleaned = re.sub(r"[_\-]{2,}", "_", cleaned)
+    # cleaned = re.sub(r"_[0-9]+(_[0-9]+)*$", "", cleaned)  # remove trailing run IDs like _1_490
+    # cleaned = re.sub(r"[_\-]+$", "", cleaned)
+    # cleaned = re.sub(r"[_\-]{2,}", "_", cleaned)
     return cleaned.strip("_- ")
 
 def create_final_outputs(results_folder):
@@ -31,8 +31,8 @@ def create_final_outputs(results_folder):
 
     # --- Priority order for annotated file detection ---
     annotated_candidates = [
-        ("8-Final_annotated_results_loess_normalized.csv", "LOESS normalization"),
-        ("6-Final_annotated_results_median_normalized.csv", "Median normalization"),
+        ("9-Final_annotated_results_loess_normalized.csv", "LOESS normalization"),
+        ("7-Final_annotated_median_normalized.csv", "Median normalization"),
         ("5-Final_annotated_results_normalized.csv", "Basic normalization"),
         ("4-Final_annotated_results_imputed_filtered.csv", "Imputed filtered only")
     ]
@@ -75,7 +75,7 @@ def create_final_outputs(results_folder):
         print("⚠️ No dedicated unknowns file found. Only annotated file will be processed.", flush=True)
 
     # --- Load annotated data ---
-    df_ann = pd.read_csv(annotated_file)
+    df_ann = pd.read_csv(annotated_file, low_memory=False)
 
     # --- Exclude internal standards (Annotation Type == "IS") ---
     if "Annotation Type" in df_ann.columns:
@@ -92,10 +92,11 @@ def create_final_outputs(results_folder):
         "Annotation", "Annotation Type", "Annotation Source",
         "Headgroup", "Lipid Class",
         "Δm/z (mDa)", "Δm/z (ppm)", "MS/MS score", "Annotation tier", "mSigma",
+        "CCS (Å²)", "Mob. 1/K0", "ΔCCS [%]",
         "Molecular Formula", "Plasmenyl?",
         "Number of carbons in fatty acyls", "Double bond equivalents",
         "Chain type", "PUFA?", "Modifications", "# of modifications",
-        "Oxidized?", "Carbons / double bond equivalent ratio"
+        "Oxidized?", "Carbons / double bond equivalent ratio",
         "RSD QCs (%)", "RSD Samples (%)",
     ]
 
@@ -140,7 +141,7 @@ def create_final_outputs(results_folder):
     df_ann.to_csv(annotated_path, index=False, encoding="utf-8-sig")
 
     if unknowns_file:
-        df_unk = pd.read_csv(unknowns_file)
+        df_unk = pd.read_csv(unknowns_file, low_memory=False)
 
         # --- Define desired columns for unknowns ---
         base_cols_unk = [
@@ -185,11 +186,11 @@ def create_final_outputs(results_folder):
         df_unk.to_csv(unknowns_path, index=False, encoding="utf-8-sig")
 
 
-    print(f"💾 Saved: {annotated_path.name} ({len(df_ann)} rows)")
+    print(f"Saved: {annotated_path.name} ({len(df_ann)} rows)")
     if unknowns_file:
-        print(f"💾 Saved: {unknowns_path.name} ({len(df_unk)} rows)")
+        print(f"Saved: {unknowns_path.name} ({len(df_unk)} rows)")
     else:
-        print("⚠️ No unknowns file was saved (not found in debug folder).")
+        print("No unknowns file was saved (not found in debug folder).")
 
     return annotated_path, unknowns_path if unknowns_file else None, method_used
 

@@ -108,7 +108,7 @@ def search_local_database(file_path, output_folder, mz_tolerance_ppm=3,
     - Duplicate rows if multiple matches exist
     """
     file_path = Path(file_path)
-    df_input = pd.read_csv(file_path)
+    df_input = pd.read_csv(file_path, low_memory=False)
 
     print('\nRunning MS search against local database...\n')
 
@@ -131,7 +131,7 @@ def search_local_database(file_path, output_folder, mz_tolerance_ppm=3,
     if not db_path.exists():
         raise FileNotFoundError(f"Local database not found at {db_path}")
 
-    df_db = pd.read_excel(db_path)
+    df_db = pd.read_excel(db_path, low_memory=False)
     df_db.columns = df_db.columns.str.strip()
 
     if "Neutral mass" not in df_db.columns:
@@ -276,6 +276,7 @@ def search_local_database(file_path, output_folder, mz_tolerance_ppm=3,
         "Annotation tier",
         "Annotation Type", "Annotation Source", "Metaboscape Annotation Status", "MS/MS available?", 
         "MS/MS score", "mSigma", 
+        "CCS (Å²)", "Mob. 1/K0", "ΔCCS [%]",
         "LIPIDMAPS ID (MS matches)", "Matched adduct (MS matches)", "Matched Mass (MS matches)", 
         "Number of carbons in fatty acyls", 
         "Number of carbons in fatty acyl 1", "Number of carbons in fatty acyl 2", "Number of carbons in fatty acyl 3", "Number of carbons in fatty acyl 4", 

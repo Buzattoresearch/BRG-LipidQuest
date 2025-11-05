@@ -45,8 +45,8 @@ def loess_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_f
     output_folder = Path(output_folder)
     output_folder.mkdir(parents=True, exist_ok=True)
 
-    df = pd.read_csv(annotated_csv)
-    group_df = pd.read_csv(sample_groups_csv)
+    df = pd.read_csv(annotated_csv, low_memory=False)
+    group_df = pd.read_csv(sample_groups_csv, low_memory=False)
 
     # Verify required columns
     if "Order" not in group_df.columns:
@@ -83,65 +83,80 @@ def loess_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_f
         if np.isnan(intensities).all():
             continue
 
-        # Use only QC samples to fit LOESS
-        qc_y = intensities[qc_mask.values]
-        qc_x = order[qc_mask.values]
+                # --- Use only QC samples; operate in log10 space; LOOCV at QC points ---
+        qc_idx = np.where(qc_mask.values)[0]
+        qc_y = intensities[qc_idx]
+        qc_x = order[qc_idx]
 
-        if len(qc_y) < 4 or np.all(np.isnan(qc_y)):
-            continue
-
+        # require >=3 non-NaN QCs
         valid = ~np.isnan(qc_y)
-        if valid.sum() < 4:
-            continue
-
-        # Fit LOESS on QC samples only
-        # Ensure QC order values are sorted before interpolation
-        sorted_idx = np.argsort(qc_x[valid])
-        qc_x_sorted = qc_x[valid][sorted_idx]
-        qc_y_valid_sorted = qc_y[valid][sorted_idx]
-
-                # Skip if fewer than 3 QCs
         if valid.sum() < 3:
             continue
 
-        qc_x_valid = qc_x[valid]
-        qc_y_valid = qc_y[valid]
+        x_qc = qc_x[valid].astype(float)
+        y_qc = qc_y[valid].astype(float)
+        y_qc_log = np.log10(y_qc)
 
-        if len(qc_y_valid) < 5:
-            # --- Linear correction for 3–4 QCs ---
-            coeffs = np.polyfit(qc_x_valid, qc_y_valid, 1)
-            trend = np.polyval(coeffs, order)
-            model_type = "linear"
-        else:
-            # --- LOESS smoothing for ≥5 QCs ---
-            sorted_idx = np.argsort(qc_x_valid)
-            qc_x_sorted = qc_x_valid[sorted_idx]
-            qc_y_sorted = qc_y_valid[sorted_idx]
-            frac_use = 1.0 if len(qc_y_valid) <= 6 else frac
-            fitted = lowess(qc_y_sorted, qc_x_sorted, frac=frac_use, return_sorted=False)
-            trend = np.interp(order, qc_x_sorted, fitted)
-            model_type = "loess"
+        # helper: predict trend (log-space). Use LOWESS if >=5 points, else linear in log-space.
+        def loess_predict(x_train, y_train_log, x_grid, frac_use):
+            x_train = np.asarray(x_train, dtype=float)
+            y_train_log = np.asarray(y_train_log, dtype=float)
+            x_grid = np.asarray(x_grid, dtype=float)
 
-        # Guard against zeros or negative trends
-        trend = np.where(trend <= 0, np.nan, trend)
+            if len(x_train) >= 5:
+                fitted_train = lowess(y_train_log, x_train, frac=frac_use, it=0, return_sorted=False)
+                order_idx = np.argsort(x_train)
+                return np.interp(x_grid, x_train[order_idx], fitted_train[order_idx])
+            elif len(x_train) >= 2:
+                coeffs = np.polyfit(x_train, y_train_log, 1)
+                return np.polyval(coeffs, x_grid)
+            else:
+                return np.full_like(x_grid, np.nan, dtype=float)
 
-        # Apply drift correction:
-        qc_median = np.nanmedian(qc_y_valid)
-        corrected_vals = (intensities / trend) * qc_median
+        # choose smoothing (more smoothing when few QCs)
+        frac_use = 1.0 if len(x_qc) <= 6 else frac
+
+        # ---- LOOCV trend at the QC orders (prevents collapse to a constant) ----
+        trend_qc_log = np.empty_like(y_qc_log)
+        for j in range(len(x_qc)):
+            mask_j = np.ones(len(x_qc), dtype=bool)
+            mask_j[j] = False
+            pred = loess_predict(x_qc[mask_j], y_qc_log[mask_j], np.array([x_qc[j]]), frac_use)
+            trend_qc_log[j] = pred[0]
+
+        # ---- Single fit for ALL orders (used for non-QC samples) ----
+        trend_all_log = loess_predict(x_qc, y_qc_log, order.astype(float), frac_use)
+
+        # build per-sample trend in log space with LOOCV at QC positions
+        trend_log = trend_all_log.copy()
+        valid_global_idx = qc_idx[valid]            # positions (in all samples) of valid QC injections
+        trend_log[valid_global_idx] = trend_qc_log  # overwrite LOOCV predictions at those QC injections
+
+        # guard: replace any non-finite trends with median of the trend
+        if not np.isfinite(trend_log).all():
+            med_trend_log = np.nanmedian(trend_log)
+            trend_log = np.where(np.isfinite(trend_log), trend_log, med_trend_log)
+
+        # anchor to the median fitted QC trend (not raw QC median)
+        qc_trend_med_log = np.nanmedian(trend_qc_log)
+        trend = np.power(10.0, trend_log)
+        anchor = np.power(10.0, qc_trend_med_log)
+
+        corrected_vals = (intensities / trend) * anchor
         corrected_df.loc[idx, sample_cols] = corrected_vals
 
-        # Plot a few features for visual check
+        # Optional: quick diagnostic plot for a tiny random subset
         if np.random.rand() < 0.002:
             plt.figure(figsize=(5, 4))
-            plt.scatter(qc_x_valid, qc_y_valid, color="gray", label="QC intensities")
-            if model_type == "loess":
-                plt.plot(qc_x_sorted, fitted, color="red", lw=2, label="LOESS fit")
-            else:
-                plt.plot(qc_x_valid, np.polyval(coeffs, qc_x_valid),
-                         color="blue", lw=2, label="Linear fit")
+            # raw QC points
+            plt.scatter(x_qc, y_qc, label="QC raw", s=20)
+            # fitted trend over all injections
+            plt.plot(order, np.power(10.0, trend_all_log), label="Trend (all fit)", lw=2)
+            # LOOCV trend only at QC positions
+            plt.scatter(x_qc, np.power(10.0, trend_qc_log), label="LOOCV @ QC", s=20)
             plt.xlabel("Injection order")
             plt.ylabel("Intensity")
-            plt.title(f"Feature {idx} Drift Correction ({model_type})")
+            plt.title(f"Feature {idx} drift")
             plt.legend()
             plt.tight_layout()
             plt.savefig(drift_plots_folder / f"feature_{idx}_drift.png", dpi=200)
@@ -151,7 +166,7 @@ def loess_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_f
     # Recalculate RSDs using sample_groups.csv (QC defined by Group column)
     # -----------------------------------------------------------------
     print("[STEP] Recalculating RSDs after LOESS correction...", flush=True)
-    group_df = pd.read_csv(sample_groups_csv)
+    group_df = pd.read_csv(sample_groups_csv, low_memory=False)
 
     # Identify sample columns (intensity data)
     sample_cols = [c for c in corrected_df.columns if c.startswith("[POS") or c.startswith("[NEG]")]
@@ -213,7 +228,9 @@ def loess_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_f
         "RSD QCs (%)", "RSD Samples (%)", "RSD_12x [%]", "RSD_15x [%]", "RSD_5x [%]",
         "RSD_8x [%]", "RSD_QC [%]", "MS/MS available?", "Annotation", "Annotation Type",
         "Metaboscape Annotation Status", "Annotation Source", "Headgroup", "Lipid Class",
-        "Δm/z (mDa)", "Δm/z (ppm)", "MS/MS score", "Annotation tier", "mSigma", "Molecular Formula",
+        "Δm/z (mDa)", "Δm/z (ppm)", "MS/MS score", "Annotation tier", "mSigma", 
+        "CCS (Å²)", "Mob. 1/K0", "ΔCCS [%]",
+        "Molecular Formula",
         "Plasmenyl?", "Number of carbons in fatty acyls", "Double bond equivalents",
         "Number of carbons in fatty acyl 1", "Double bonds in fatty acyl 1",
         "Number of carbons in fatty acyl 2", "Double bonds in fatty acyl 2",

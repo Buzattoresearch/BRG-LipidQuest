@@ -316,9 +316,9 @@ class StatisticsPage(tk.Toplevel):
         cleaned = re.sub(r"\[?POS\]?|\[?NEG\]?", "", cleaned, flags=re.IGNORECASE)   # remove [POS]/[NEG]
         cleaned = re.sub(r"^(P_|N_)", "", cleaned)                                   # remove P_/N_ prefix
         cleaned = re.split(r"_P[12]", cleaned)[0]                                    # cut at _P1/_P2
-        cleaned = re.sub(r"_[0-9]+(_[0-9]+)*$", "", cleaned)                         # drop trailing run ids
-        cleaned = re.sub(r"[_\-]+$", "", cleaned)
-        cleaned = re.sub(r"[_\-]{2,}", "_", cleaned)
+        # cleaned = re.sub(r"_[0-9]+(_[0-9]+)*$", "", cleaned)                         # drop trailing run ids
+        # cleaned = re.sub(r"[_\-]+$", "", cleaned)
+        # cleaned = re.sub(r"[_\-]{2,}", "_", cleaned)
         return cleaned.strip("_- ")
 
     # ==========================================================

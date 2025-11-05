@@ -36,7 +36,7 @@ def plot_results(input_csv, output_folder="results"):
     """
     print(f'\nPlotting annotation results...\n')
 
-    df = pd.read_csv(input_csv)
+    df = pd.read_csv(input_csv, low_memory=False)
     output_folder = Path(output_folder) / "Annotation plots"
     output_folder.mkdir(parents=True, exist_ok=True)
 
@@ -185,7 +185,7 @@ def plot_kendrick_mass_vs_defect(input_csv, results_folder):
     optimized for readability and balanced layout.
     """
     print(f'\nPlotting Kendrick Mass Defect results...\n')
-    df = pd.read_csv(input_csv)
+    df = pd.read_csv(input_csv, low_memory=False)
 
     # --- Basic filtering ---
     df = df[df["Neutral mass"].notna()]

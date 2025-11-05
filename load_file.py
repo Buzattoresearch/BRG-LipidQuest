@@ -13,7 +13,7 @@ def read_metaboscape_table(path, sheet_name=None, index_col=None):
     xls = pd.ExcelFile(path)
     s = sheet_name if sheet_name is not None else xls.sheet_names[0]
 
-    df = pd.read_excel(xls, sheet_name=s, index_col=index_col, header=0)
+    df = pd.read_excel(xls, sheet_name=s, index_col=index_col, header=0, low_memory=False)
     df.insert(0, "UniqueID", range(1, len(df) + 1))
 
     # Drop unwanted columns if they exist
@@ -27,7 +27,7 @@ def read_metaboscape_table(path, sheet_name=None, index_col=None):
 def load_headgroup_to_class(mapping_path):
     """Load the Headgroup_to_class mapping file and return a dict {headgroup: subclass}."""
     print(f'\nLoading the results file...\n')
-    df_map = pd.read_csv(mapping_path, encoding="latin1")
+    df_map = pd.read_csv(mapping_path, encoding="latin1", low_memory=False)
     mapping = {}
 
     for _, row in df_map.iterrows():
@@ -167,7 +167,7 @@ def sanitize_file(
         group_file = Path(output_folder) / "sample_groups.csv"
         if group_file.exists():
             try:
-                group_df = pd.read_csv(group_file)
+                group_df = pd.read_csv(group_file, low_memory=False)
                 group_map = dict(zip(group_df["Sample"], group_df["Group"]))
             except Exception as e:
                 print(f"[WARNING] Failed to load sample_groups.csv: {e}")
@@ -337,7 +337,8 @@ def sanitize_file(
     metadata_following = [
         "MS/MS available?", "Annotation", "Annotation Type",
         "Metaboscape Annotation Status", "Annotation Source", "Headgroup", "Lipid Class",
-        "Δm/z (mDa)", "Δm/z (ppm)", "MS/MS score", "Annotation tier", "mSigma",
+        "Δm/z (mDa)", "Δm/z (ppm)", "MS/MS score", "Annotation tier", "mSigma", 
+        "CCS (Å²)", "Mob. 1/K0", "ΔCCS [%]",
         "Molecular Formula", "Plasmenyl?", "Number of carbons in fatty acyls",
         "Double bond equivalents", "Number of carbons in fatty acyl 1", "Double bonds in fatty acyl 1",
         "Number of carbons in fatty acyl 2", "Double bonds in fatty acyl 2",

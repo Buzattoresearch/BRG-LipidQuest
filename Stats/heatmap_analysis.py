@@ -130,38 +130,49 @@ def _feature_labels_from_annotations(feature_meta: pd.DataFrame, feature_ids: li
 
 
 def _group_colorbar(groups: pd.Series):
-    """Return a list of colors for each sample corresponding to its group.
-    Always assign black to any group named 'QC' (case-insensitive).
+    """Return a list of per-sample colors and legend handles.
+    - Many distinct hues for arbitrary #groups
+    - QC (any case) is always black and not counted against the palette
     """
     groups = groups.astype(str)
-    unique = groups.unique()
+    unique_in_order = list(pd.unique(groups))  # preserves sample order
+    # Separate QC so we don't waste a palette slot
+    non_qc = [g for g in unique_in_order if g.lower() != "qc"]
+    has_qc = any(g.lower() == "qc" for g in unique_in_order)
 
-    # build base palette (pastel up to 10 groups)
-    if len(unique) <= 10:
-        palette = sns.color_palette("pastel", len(unique))
-    else:
-        palette = sns.color_palette("pastel", 10) + sns.color_palette(
-            "husl", max(0, len(unique) - 10)
+    # Build a large, distinct palette for non-QC groups
+    n = len(non_qc)
+    if n <= 10:
+        base = sns.color_palette("tab10", n_colors=n)
+    elif n <= 20:
+        base = sns.color_palette("tab20", n_colors=n)
+    elif n <= 32:
+        base = (
+            sns.color_palette("tab20", 20)
+            + sns.color_palette("tab20b", 20)[:6]
+            + sns.color_palette("tab20c", 20)[:6]
         )
+        base = base[:n]
+    else:
+        # Arbitrarily many — HUSL keeps them reasonably distinct
+        base = sns.husl_palette(n, s=.90, l=.55)
 
-    color_map = {}
-    palette_iter = iter(palette)
+    # Map non-QC groups to colors (deterministic order)
+    color_map = {g: base[i] for i, g in enumerate(non_qc)}
+    if has_qc:
+        color_map.update({g: "#000000" for g in unique_in_order if g.lower() == "qc"})
 
-    for g in unique:
-        if g.lower() == "qc":  # case-insensitive match
-            color_map[g] = "#000000"  # always black for QC
-        else:
-            color_map[g] = next(palette_iter, "#CCCCCC")  # fallback gray if too many groups
-
-    # map each sample’s group → color
+    # Per-sample colors in the same order as columns/samples
     col_colors = groups.map(color_map).tolist()
 
-    # create legend handles
+    # Legend handles (QC shown in black)
+    legend_order = non_qc + ([g for g in unique_in_order if g.lower() == "qc"] if has_qc else [])
     legend_handles = [
-        plt.matplotlib.patches.Patch(color=color_map[g], label=g) for g in unique
+        plt.matplotlib.patches.Patch(color=color_map[g], label=g) for g in legend_order
     ]
 
     return col_colors, legend_handles
+
 
 def _dynamic_figsize(n_features: int, n_samples: int, row_height_inch: float = 0.25, top_bottom_margin_inch: float = 2.5) -> tuple:
     """

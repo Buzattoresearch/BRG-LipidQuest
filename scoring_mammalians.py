@@ -13,7 +13,7 @@ from pathlib import Path
 
 def load_adduct_sensitivity(path):
     # Skip the first grouping row, use second row as header
-    df = pd.read_csv(path, header=[1])
+    df = pd.read_csv(path, header=[1], low_memory=False)
 
     ion_score_dict = {"Pos": {}, "Neg": {}}
     sensitivity = {"Pos": {}, "Neg": {}}
@@ -40,8 +40,8 @@ def load_adduct_sensitivity(path):
     return ion_score_dict, sensitivity
 
 def load_rt_groups(groups_path, windows_path):
-    groups = pd.read_csv(groups_path)
-    windows = pd.read_csv(windows_path)
+    groups = pd.read_csv(groups_path, low_memory=False)
+    windows = pd.read_csv(windows_path, low_memory=False)
 
     # Normalize lipid_class
     groups["lipid_class"] = groups["lipid_class"].astype(str).str.strip().str.upper()

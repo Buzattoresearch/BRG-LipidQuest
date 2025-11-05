@@ -29,7 +29,7 @@ def handle_adducts(
     debug_folder = output_folder / "debug"
     debug_folder.mkdir(parents=True, exist_ok=True)
 
-    df = pd.read_csv(input_csv)
+    df = pd.read_csv(input_csv, low_memory=False)
     if "Annotation" not in df.columns or "RT (min)" not in df.columns:
         raise ValueError("Input file must contain 'Annotation' and 'RT (min)' columns.")
 

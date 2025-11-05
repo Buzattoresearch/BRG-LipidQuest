@@ -24,7 +24,7 @@ def _normalize_polarity(x):
 
 def _load_contaminants_by_polarity(contaminant_csv_path):
     """Return {'pos':[mz...], 'neg':[mz...]} from Appendix/Contaminants.csv"""
-    cdf = pd.read_csv(contaminant_csv_path)
+    cdf = pd.read_csv(contaminant_csv_path, low_memory=False)
     if "polarity" not in cdf.columns or "m/z" not in cdf.columns:
         raise ValueError("Contaminants.csv must have columns: 'm/z', 'polarity'")
     cdf["polarity"] = cdf["polarity"].map(_normalize_polarity)
@@ -64,56 +64,51 @@ def detect_flat_features(
     df: pd.DataFrame,
     prefix="[POS",
     rel_std_thresh=0.05,
-    intensity_quantile_low=1,
+    intensity_quantile_low=0.01,
     intensity_quantile_high=0.998,
     debug_folder=None,
     plot=True,
     exclude_is=True,
     is_columns=("IS","Type","Sample Type")
 ):
-    """
-    Detect flat-intensity features to remove baseline contaminants (low intensity)
-    and saturated peaks (high intensity) using RSD thresholds only.
+    print("\nRemoving flat-intensity features (baseline contaminants or saturated features)...\n")
 
-    Parameters
-    ----------
-    rel_std_thresh : float
-        RSD cutoff below which features are considered "flat".
-    intensity_quantile_low : float
-        Lower intensity quantile (baseline cutoff).
-    intensity_quantile_high : float
-        Upper intensity quantile (saturation cutoff).
-    exclude_is : bool
-        Skip internal standards (IS) from removal.
-    """
-    print(f'\nRemoving flat-intensity features (baseline contaminants or saturated features)... \n')
-
-    sample_cols = [c for c in df.columns if str(c).startswith(prefix)]
+    # 1) pick sample columns for this polarity
+    sample_cols = [c for c in df.columns if str(c).strip().startswith(prefix)]
     if not sample_cols:
-        print(f"\n\n===== No sample columns found starting with '{prefix}'. Skipping baseline detection. ===== \n")
+        print(f"\n===== No sample columns found starting with '{prefix}'. Skipping baseline detection. =====\n")
         return [], pd.DataFrame(columns=df.columns)
 
-    # Compute per-feature mean intensity and RSD
-    sample_data = df[sample_cols].apply(pd.to_numeric, errors="coerce")
+    # 2) mean and RSD
+    sample_data   = df[sample_cols].apply(pd.to_numeric, errors="coerce")
     mean_intensity = sample_data.mean(axis=1)
-    rel_std = sample_data.std(axis=1) / mean_intensity.replace(0, np.nan)
+    rel_std        = sample_data.std(axis=1) / mean_intensity.replace(0, np.nan)
 
-    # Quantile cutoffs
-    q_low = np.nanquantile(mean_intensity, intensity_quantile_low)
-    q_high = np.nanquantile(mean_intensity, intensity_quantile_high)
+    # 3) safe quantiles (avoid empty / all-NaN)
+    vals = mean_intensity.to_numpy()
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        # nothing to evaluate; return early
+        print("All mean intensities are NaN/0; skipping baseline detection.\n")
+        df["_MeanIntensity"] = mean_intensity
+        df["_RelStd"] = rel_std
+        df["_Flag"] = 0
+        df["_FlagType"] = "none"
+        return [], pd.DataFrame(columns=df.columns)
 
-    # Optional IS exclusion
-    if exclude_is:
-        is_mask = df.apply(_row_is_internal_standard, axis=1)
-    else:
-        is_mask = pd.Series(False, index=df.index)
+    q_low  = np.nanquantile(vals, intensity_quantile_low)
+    q_high = np.nanquantile(vals, intensity_quantile_high)
+    if q_low > q_high:
+        q_low, q_high = q_high, q_low
 
-    # Category masks
-    baseline_mask = (rel_std < rel_std_thresh) & (mean_intensity <= q_low) & (~is_mask)
+    # 4) internal standards mask
+    is_mask = df.apply(_row_is_internal_standard, axis=1) if exclude_is else pd.Series(False, index=df.index)
+
+    # 5) classify
+    baseline_mask  = (rel_std < rel_std_thresh) & (mean_intensity <= q_low)  & (~is_mask)
     saturated_mask = (rel_std < rel_std_thresh) & (mean_intensity >= q_high) & (~is_mask)
+    combined_mask  = baseline_mask | saturated_mask
 
-    # Combine and label
-    combined_mask = baseline_mask | saturated_mask
     baseline_df = df.loc[combined_mask].copy()
     baseline_df["data_cleanup_reason"] = np.where(
         baseline_mask.loc[combined_mask],
@@ -121,72 +116,61 @@ def detect_flat_features(
         "Saturated feature (flat high intensity)"
     )
 
-    # Annotate for plotting
+    # annotate for plotting/logging
     df["_MeanIntensity"] = mean_intensity
     df["_RelStd"] = rel_std
     df["_Flag"] = combined_mask.astype(int)
-    df["_FlagType"] = np.where(baseline_mask, "baseline", np.where(saturated_mask, "saturated", "none"))
+    df["_FlagType"] = np.where(baseline_mask, "baseline",
+                        np.where(saturated_mask, "saturated", "none"))
 
-    # Counts
-    n_total = len(df)
-    n_baseline = int(baseline_mask.sum())
+    n_total     = len(df)
+    n_baseline  = int(baseline_mask.sum())
     n_saturated = int(saturated_mask.sum())
-    n_flagged = int(combined_mask.sum())
+    n_flagged   = int(combined_mask.sum())
 
-    print(f"Baseline/saturation detection ({prefix}):", flush=True)
-    print(f"  RSD threshold     : {rel_std_thresh}", flush=True)
-    print(f"  Low-intensity q{intensity_quantile_low*100:.0f} cutoff : {q_low:.2f}", flush=True)
-    print(f"  High-intensity q{intensity_quantile_high*100:.0f} cutoff: {q_high:.2f}", flush=True)
-    print(f"  Baseline features : {n_baseline}", flush=True)
-    print(f"  Saturated features: {n_saturated}", flush=True)
-    print(f"  Total flagged     : {n_flagged} ({n_flagged/n_total*100:.2f} % of total)", flush=True)
+    print(f"Baseline/saturation detection ({prefix}):")
+    print(f"  RSD threshold                : {rel_std_thresh}")
+    print(f"  Low-intensity q{intensity_quantile_low*100:.1f} cutoff : {q_low:.2f}")
+    print(f"  High-intensity q{intensity_quantile_high*100:.1f} cutoff: {q_high:.2f}")
+    print(f"  Baseline features            : {n_baseline}")
+    print(f"  Saturated features           : {n_saturated}")
+    print(f"  Total flagged                : {n_flagged} ({n_flagged/n_total*100:.2f} % of total)")
 
-    # Save summary log
+    # write report
     if debug_folder:
-        debug_folder = Path(debug_folder)
-        debug_folder.mkdir(parents=True, exist_ok=True)
-        with open(debug_folder / "baseline_filter_report.txt", "w", encoding="utf-8") as f:
+        d = Path(debug_folder); d.mkdir(parents=True, exist_ok=True)
+        with open(d / "baseline_filter_report.txt", "w", encoding="utf-8") as f:
             f.write(f"Baseline/saturation detection ({prefix})\n")
             f.write(f"rel_std_thresh = {rel_std_thresh}\n")
             f.write(f"intensity_quantile_low  = {intensity_quantile_low}\n")
             f.write(f"intensity_quantile_high = {intensity_quantile_high}\n")
+            f.write(f"q_low  = {q_low}\nq_high = {q_high}\n")
             f.write(f"Baseline (flat low)     = {n_baseline}\n")
             f.write(f"Saturated (flat high)   = {n_saturated}\n")
             f.write(f"Total flagged           = {n_flagged}\n")
 
-    # Plot diagnostics
-    if plot and debug_folder is not None:
-        try:
-            plt.figure(figsize=(7, 6))
-            plt.scatter(df["_MeanIntensity"], df["_RelStd"], s=20, alpha=0.3, color="gray", label="All features")
-            if n_baseline:
-                plt.scatter(
-                    df.loc[baseline_mask, "_MeanIntensity"],
-                    df.loc[baseline_mask, "_RelStd"],
-                    s=25, color="red", label=f"Baseline (n={n_baseline})"
-                )
-            if n_saturated:
-                plt.scatter(
-                    df.loc[saturated_mask, "_MeanIntensity"],
-                    df.loc[saturated_mask, "_RelStd"],
-                    s=25, color="orange", label=f"Saturated (n={n_saturated})"
-                )
-            plt.axhline(rel_std_thresh, color="blue", ls="--", lw=1, label=f"RSD<{rel_std_thresh}")
-            plt.axvline(q_low, color="purple", ls=":", lw=1, label=f"Low q{intensity_quantile_low*100:.0f}")
-            plt.axvline(q_high, color="green", ls=":", lw=1, label=f"High q{intensity_quantile_high*100:.0f}")
-            plt.xscale("log"); plt.yscale("log")
-            plt.xlabel("Mean Intensity (log scale)")
-            plt.ylabel("Relative Standard Deviation (std/mean, log scale)")
-            plt.title(f"Baseline and Saturation Detection ({prefix})")
-            plt.legend()
-            plt.tight_layout()
-            plt.savefig(Path(debug_folder) / "Baseline_flag_vs_meanIntensity.png", dpi=300)
-            plt.close()
-        except Exception as e:
-            print(f"[WARNING] Plot failed: {e}")
+        if plot:
+            try:
+                plt.figure(figsize=(7,6))
+                plt.scatter(df["_MeanIntensity"], df["_RelStd"], s=20, alpha=0.3, color="gray", label="All")
+                if n_baseline:
+                    plt.scatter(df.loc[baseline_mask, "_MeanIntensity"], df.loc[baseline_mask, "_RelStd"],
+                                s=25, label=f"Baseline (n={n_baseline})", color="red")
+                if n_saturated:
+                    plt.scatter(df.loc[saturated_mask, "_MeanIntensity"], df.loc[saturated_mask, "_RelStd"],
+                                s=25, label=f"Saturated (n={n_saturated})", color="orange")
+                plt.axhline(rel_std_thresh, color="blue", ls="--", lw=1, label=f"RSD<{rel_std_thresh}")
+                plt.axvline(q_low,  color="purple", ls=":", lw=1, label=f"Low q{intensity_quantile_low*100:.1f}")
+                plt.axvline(q_high, color="green",  ls=":", lw=1, label=f"High q{intensity_quantile_high*100:.1f}")
+                plt.xscale("log"); plt.yscale("log")
+                plt.xlabel("Mean Intensity (log)"); plt.ylabel("RSD (std/mean, log)")
+                plt.title(f"Baseline & Saturation ({prefix})"); plt.legend(); plt.tight_layout()
+                plt.savefig(Path(debug_folder) / "Baseline_flag_vs_meanIntensity.png", dpi=300)
+                plt.close()
+            except Exception as e:
+                print(f"[WARNING] Plot failed: {e}")
 
     return list(df.index[combined_mask]), baseline_df
-
 
 
 # -------------------------------------------------------------------------
@@ -273,7 +257,7 @@ def apply_data_cleansing(
     df_clean = df.loc[~remove_flag].copy()
 
     # --- 2. Baseline contaminants ---
-    baseline_indices, baseline_df = detect_flat_features(df_clean, prefix=prefix, debug_folder=debug_folder)
+    baseline_indices, baseline_df = detect_flat_features(df_clean, prefix=prefix, rel_std_thresh=rsd_thresh, debug_folder=debug_folder)
     if not baseline_df.empty:
         baseline_df.to_csv(debug_folder / "Removed_baseline.csv", index=False, encoding="utf-8-sig")
         df_clean = df_clean.drop(index=baseline_indices)
@@ -418,7 +402,7 @@ def apply_data_cleansing(
     group_file = Path(output_folder) / "sample_groups.csv"
     if group_file.exists():
         try:
-            group_df = pd.read_csv(group_file)
+            group_df = pd.read_csv(group_file, low_memory=False)
             group_map = dict(zip(group_df["Sample"], group_df["Group"]))
             group_names = sorted(set(group_map.values()))
             print(f"[DEBUG] Groups detected for filtering: {group_names}", flush=True)
@@ -542,7 +526,7 @@ def apply_data_cleansing(
         df_after_detect = df_after_qc.copy()
         if group_file.exists():
             try:
-                group_df = pd.read_csv(group_file)
+                group_df = pd.read_csv(group_file, low_memory=False)
                 group_map = dict(zip(group_df["Sample"], group_df["Group"]))
                 detection_masks = []
                 for group in sorted(set(group_map.values())):

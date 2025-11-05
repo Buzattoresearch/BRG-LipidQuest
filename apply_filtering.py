@@ -122,6 +122,7 @@ def reorder_columns(df):
             "MS/MS available?", "Annotation", "Annotation Type",
             "Metaboscape Annotation Status", "Annotation Source", "Headgroup", "Lipid Class",
             "Δm/z (mDa)", "Δm/z (ppm)", "MS/MS score", "Annotation tier", "mSigma",
+            "CCS (Å²)", "Mob. 1/K0", "ΔCCS [%]",
             "Molecular Formula", "Plasmenyl?", "Number of carbons in fatty acyls",
             "Double bond equivalents", "Number of carbons in fatty acyl 1", "Double bonds in fatty acyl 1",
             "Number of carbons in fatty acyl 2", "Double bonds in fatty acyl 2",
@@ -243,7 +244,7 @@ def run_pipeline(input_csv, output_folder, min_score=70, scoring_module="scoring
     output_folder.mkdir(parents=True, exist_ok=True)
 
     # Load data
-    df = pd.read_csv(input_csv)
+    df = pd.read_csv(input_csv, low_memory=False)
 
     # Dynamically import scoring & plausibility logic
     scoring = importlib.import_module(scoring_module)
@@ -260,7 +261,7 @@ def run_pipeline(input_csv, output_folder, min_score=70, scoring_module="scoring
     
     print('\n----- Starting MS filtering ----- \n')
     # Step 1: Load
-    df = pd.read_csv(input_path)
+    df = pd.read_csv(input_path, low_memory=False)
     print(f'Before filtering and scoring: {len(df)}, unassigned: {count_unassigned(df)}', flush=True)
 
     # Step 2: Apply scoring
@@ -325,7 +326,7 @@ def run_pipeline(input_csv, output_folder, min_score=70, scoring_module="scoring
     # --- Compute RSD QCs (%) and RSD Samples (%) for all features ---
     group_file = Path(output_folder) / "sample_groups.csv"
     if group_file.exists():
-        group_df = pd.read_csv(group_file)
+        group_df = pd.read_csv(group_file, low_memory=False)
         qc_samples = group_df.loc[group_df["Group"].str.upper().str.strip() == "QC", "Sample"].tolist()
 
         # Build group → sample mapping
