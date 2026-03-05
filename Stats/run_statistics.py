@@ -2,13 +2,28 @@
 import os
 import pandas as pd
 from pathlib import Path
+from typing import Optional
 from Stats.pca_analysis import run_pca
 from Stats.plsda_analysis import run_plsda
 from Stats.volcano_analysis import run_volcano
 from Stats.heatmap_analysis import run_heatmap
+from Stats.violinplots import run_violinplots
+from Stats.boxplots import run_boxplots
+from Stats.correlation_analysis import run_correlation_analysis
+from Stats.class_distributions import run_from_stats as run_class_distributions
+from Stats.summed_intensity_per_class import run_from_stats as run_class_sums
+
 from Stats.utils import prepare_output_dir
 
-def run_all_statistics(output_folder: Path, run_with_QCs=True, run_without_QCs=True, run_highconf=True):
+def run_all_statistics(
+    output_folder: Path,
+    run_with_QCs: bool = True,
+    run_without_QCs: bool = True,
+    run_highconf: bool = True,
+    group_order: Optional[list[str]] = None,
+    group_colors: Optional[dict[str, str]] = None,
+):
+
     """
     Master controller for running LipidQuest statistical analyses.
     Replaces old LipidQuest_Stats.py to work with the new GUI output structure.
@@ -48,14 +63,14 @@ def run_all_statistics(output_folder: Path, run_with_QCs=True, run_without_QCs=T
 
         # === Core Analyses ===
         try:
-            run_pca(file_path, group_file, save_dir)
+            run_pca(file_path, group_file, save_dir, group_colors=group_colors, group_order=group_order)
         except Exception as e:
             print(f"[PCA Error] {e}")
 
         try:
             # Skip PLS-DA if dataset contains QCs
             if "Without_QCs" in dataset_name:
-                run_plsda(file_path, group_file, save_dir)
+                run_plsda(file_path, group_file, save_dir, group_colors=group_colors, group_order=group_order)
             else:
                 print(f"[PLS-DA] Skipped {dataset_name} (contains QCs).")
         except Exception as e:
@@ -64,7 +79,7 @@ def run_all_statistics(output_folder: Path, run_with_QCs=True, run_without_QCs=T
         try:
             # Skip Volcano if dataset contains QCs
             if "Without_QCs" in dataset_name:
-                run_volcano(file_path, group_file, save_dir)
+                run_volcano(file_path, group_file, save_dir, group_colors=group_colors, group_order=group_order)
             else:
                 print(f"[Volcano] Skipped {dataset_name} (contains QCs).")
         except Exception as e:
@@ -73,10 +88,55 @@ def run_all_statistics(output_folder: Path, run_with_QCs=True, run_without_QCs=T
         try:
             # Skip Heatmap if dataset contains QCs
             if "Without_QCs" in dataset_name:
-                run_heatmap(file_path, group_file, save_dir)
+                run_heatmap(file_path, group_file, save_dir, group_colors=group_colors, group_order=group_order)
             else:
                 print(f"[Heatmap] Skipped {dataset_name} (contains QCs).")
         except Exception as e:
             print(f"[Heatmap Error] {e}")
+         
+        try:
+            # Skip Violin if dataset contains QCs
+            if "Without_QCs" in dataset_name:
+                run_boxplots(file_path, group_file, save_dir, group_colors=group_colors, group_order=group_order)
+            else:
+                print(f"[Box plots] Skipped {dataset_name} (contains QCs).")
+        except Exception as e:
+            print(f"[Boxplot Error] {e}")
+                
+        try:
+            # Skip Violin if dataset contains QCs
+            if "Without_QCs" in dataset_name:
+                run_violinplots(file_path, group_file, save_dir, group_colors=group_colors, group_order=group_order)
+            else:
+                print(f"[Violin plots] Skipped {dataset_name} (contains QCs).")
+        except Exception as e:
+            print(f"[Violin Error] {e}")
+            
+        try:
+            # Skip Correlations if dataset contains QCs
+            if "Without_QCs" in dataset_name:
+                run_correlation_analysis(file_path, group_file, save_dir, group_order=group_order)
+            else:
+                print(f"[Correlations] Skipped {dataset_name} (contains QCs).")
+        except Exception as e:
+            print(f"[Correlations Error] {e}")
+            
+        try:
+            # Skip Total intensity plots if dataset contains QCs
+            if "Without_QCs" in dataset_name:
+                run_class_distributions(file_path, group_file, save_dir, group_order=group_order, unknown_policy="append")
+            else:
+                print(f"[Total intensity] Skipped {dataset_name} (contains QCs).")
+        except Exception as e:
+            print(f"[Total intensity Error] {e}")
+            
+        try:
+            # Skip Summed Intensities per Class if dataset contains QCs
+            if "Without_QCs" in dataset_name:
+                run_class_sums(file_path, group_file, save_dir, group_order=group_order)
+            else:
+                print(f"[Summed Intensities per Class] Skipped {dataset_name} (contains QCs).")
+        except Exception as e:
+            print(f"[Summed Intensities per Class Error] {e}")
 
     print("\n✅ All statistical analyses completed.\n")

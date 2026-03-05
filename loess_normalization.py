@@ -53,9 +53,31 @@ def loess_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_f
         raise ValueError("sample_groups.csv must include an 'Order' column for LOESS correction.")
 
     # Identify sample columns
-    sample_cols = [c for c in df.columns if c.startswith("[POS") or c.startswith("[NEG]")]
+    sample_cols = [c for c in df.columns if c.startswith("P_") or c.startswith("N_")]
     if not sample_cols:
-        raise ValueError("No sample columns found starting with [POS or [NEG].")
+        raise ValueError("No sample columns found starting with P_ or N_.")
+
+    # -------------------------------
+    # Determine polarity tag for filenames
+    # -------------------------------
+    pol_tag = ""
+    if "Polarity" in df.columns:
+        pol_series = df["Polarity"].dropna().astype(str).str.lower()
+        if not pol_series.empty:
+            first_pol = pol_series.iloc[0]
+            if "pos" in first_pol:
+                pol_tag = "Pos_"
+            elif "neg" in first_pol:
+                pol_tag = "Neg_"
+    if not pol_tag:
+        # Fallback: infer from sample column prefixes
+        has_pos = any(c.startswith("P_") for c in sample_cols)
+        has_neg = any(c.startswith("N_") for c in sample_cols)
+        if has_pos and not has_neg:
+            pol_tag = "Pos_"
+        elif has_neg and not has_pos:
+            pol_tag = "Neg_"
+
 
     # Merge order info
     sample_meta = group_df.set_index("Sample").reindex(sample_cols)
@@ -159,7 +181,7 @@ def loess_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_f
             plt.title(f"Feature {idx} drift")
             plt.legend()
             plt.tight_layout()
-            plt.savefig(drift_plots_folder / f"feature_{idx}_drift.png", dpi=200)
+            plt.savefig(drift_plots_folder / f"feature_{idx}_drift.png", dpi=100)
             plt.close()
 
     # -----------------------------------------------------------------
@@ -169,9 +191,9 @@ def loess_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_f
     group_df = pd.read_csv(sample_groups_csv, low_memory=False)
 
     # Identify sample columns (intensity data)
-    sample_cols = [c for c in corrected_df.columns if c.startswith("[POS") or c.startswith("[NEG]")]
+    sample_cols = [c for c in corrected_df.columns if c.startswith("P_") or c.startswith("N_")]
     if not sample_cols:
-        raise ValueError("No sample columns found. Expected columns starting with [POS or [NEG].")
+        raise ValueError("No sample columns found. Expected columns starting with P_ or N_.")
 
     # Build a mapping: group → list of sample names
     group_map = {
@@ -242,14 +264,14 @@ def loess_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_f
         "Matched IS", "Matched IS Reason", "Polarity_norm"
     ]
 
-    sample_cols = [c for c in corrected_df.columns if c.startswith("[POS") or c.startswith("[NEG]")]
+    sample_cols = [c for c in corrected_df.columns if c.startswith("P_") or c.startswith("N_")]
     ordered_cols = [c for c in core_cols if c in corrected_df.columns] + sample_cols
     corrected_df = corrected_df[[c for c in ordered_cols if c in corrected_df.columns]]
 
     # -----------------------------------------------------------------
     # Save corrected data
     # -----------------------------------------------------------------
-    out_path = output_folder / "debug" /"9-Final_annotated_results_loess_normalized.csv"
+    out_path = output_folder / "debug" / f"{pol_tag}8-Final_annotated_results_loess_normalized.csv"
     corrected_df.to_csv(out_path, index=False, encoding="utf-8-sig")
     print(f"[DONE] Saved LOESS-corrected file: {out_path}", flush=True)
 

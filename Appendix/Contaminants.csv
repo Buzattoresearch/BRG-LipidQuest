@@ -12,7 +12,6 @@ n-butyl benzenesulfonamide,212.07507,Neg
 "Trifluoroacetic acid, TFA (anion)",226.97845,Neg
 Dantron,239.03389,Neg
 "Trifluoroacetic acid, TFA, sodiated (anion)",248.9604,Neg
-Trifluoroacetic acid,248.9604,Neg
 Sodium formate 3,248.9605,Neg
 Unknown,248.9730512,Neg
 Lauryl sulfate,265.1479,Neg
@@ -135,12 +134,12 @@ Chlorfenvinphos,358.9768,Pos
 Erucamide,360.3237,Pos
 Sodium formate 3,362.9263,Pos
 "3,6,9,12-Tetraoxatetracosan-1-ol (contaminant, used in cosmetics as a cleansing, emulsifying and surfactant agent)",363.3116,Pos
+Unknown,367.33641,Pos
 Tricresylphosphate (TCP),369.125,Pos
 "Polysiloxane, Polysiloxane, followed by m/z 388",371.101236,Pos
 "DEHA, Bis(2-ethylhexyl) adipate, plasticizer",371.315586,Pos
 "DOA, Dioctyl adipate, plasticizer",371.315586,Pos
 "4-HCCA, matrix cluster, dimer",379.092464,Pos
-"Triton, reduced",381.2975,Pos
 "Polysiloxane, Polysiloxane, (see m/z 371)",388.127785,Pos
 PEG (n8),388.25411,Pos
 "Diisooctyl phthalate, Diisooctyl phthalate, plasticiser",391.284286,Pos
@@ -159,7 +158,6 @@ Unknown,444.3799879,Pos
 "PPG, Polypropylene glycol, ubiquitous polyether",447.29284,Pos
 "DCU, N,N'-Dicyclohexylurea",449.385002,Pos
 "nylon , Cyclic oligomer of polyamide 66, (adipic acid/hexylmethylene diamine condensation) ",453.343532,Pos
-Dioctyl phthalate (plasticizer),454.29278,Pos
 "Polysiloxane, Polysiloxane (see m/z 445)",462.146577,Pos
 Unknown,464.2927989,Pos
 "Peptide, porcine trypsin",472.28781,Pos
@@ -189,25 +187,26 @@ Unknown,570.4580098,Pos
 "Peptide, porcine trypsin",571.35622,Pos
 "Polysiloxane, Polysiloxane, followed by m/z 610",593.157612,Pos
 "Polysiloxane, Polysiloxane (see m/z 593)",610.184161,Pos
-Polisiloxane 1,610.1842,Pos
-"CHAPS, 3-[(3-Cholamidopropyl)dimethylammonio]-1-propanesulfonate",615.40375,Pos
 "Peptide, Bovine trypsin",633.320233,Pos
+Unknown,646.25612,Pos
 Polisiloxane 14,651.1451,Pos
+Unknown,656.29669,Pos
+Unknown,658.29259,Pos
 "Peptide, Bovine trypsin",659.383501,Pos
 "Polysiloxane, Polysiloxane, followed by m/z 684",667.176404,Pos
 "Peptide, porcine trypsin",672.4039,Pos
 "Peptide, porcine trypsin",672.4039,Pos
+Unknown,674.28772,Pos
 Erucamide,675.6752,Pos
 Unknown,678.4791783,Pos
 "nylon , Cyclic oligomer of polyamide 66, (adipic acid/hexylmethylene diamine condensation) ",679.51166,Pos
 "Polysiloxane, Polysiloxane (see m/z 667)",684.202953,Pos
 Polisiloxane 2,684.203,Pos
 Unknown,691.3141754,Pos
+Unknown,704.309165,Pos
 "Peptide, keratin",704.382499,Pos
-Unknown,704.5229453,Pos
 Unknown,705.2939362,Pos
 Unknown,712.2648387,Pos
-Unknown,718.5381989,Pos
 Polisiloxane 15,725.1639,Pos
 Unknown,732.3410124,Pos
 "Peptide, bovine serum albumin (BSA)",732.465439,Pos
@@ -218,7 +217,6 @@ Unknown,746.3201819,Pos
 Polisiloxane 3,758.2217,Pos
 "Polysiloxane, Polysiloxane (see m/z 741)",758.221745,Pos
 "Peptide, porcine trypsin",758.41553,Pos
-Unknown,766.5312423,Pos
 Unknown,790.5889799,Pos
 "Diisooctyl phthalate, Diisooctyl phthalate, plasticiser",798.587845,Pos
 Dioctyl phthalate (plasticizer),798.58785,Pos

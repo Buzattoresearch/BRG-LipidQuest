@@ -1,3 +1,5 @@
+#TODO: This is not a real adduct handling algorithm. It just removes peaks with the same m/z and same annotation within 6s.
+
 # -------------------------------------------------------------------------
 # Post-filtering adduct collapsing for LC-MS lipidomics results
 # -------------------------------------------------------------------------
@@ -5,11 +7,33 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
+def _mass_within_tolerance(m1, m2, ppm_tol=5, mda_tol=0.005):
+    """
+    Returns True if |m1 - m2| is within ppm_tol OR mda_tol.
+    Hard-safe for NaN/strings/zeros.
+    """
+    m1 = pd.to_numeric(m1, errors="coerce")
+    m2 = pd.to_numeric(m2, errors="coerce")
+    if not np.isfinite(m1) or not np.isfinite(m2):
+        return False
+
+    diff = float(abs(m1 - m2))
+
+    # ppm only makes sense if m1 > 0
+    ppm_ok = False
+    if m1 > 0:
+        ppm = diff / m1 * 1e6
+        ppm_ok = ppm <= ppm_tol
+
+    return ppm_ok or (diff <= mda_tol)
+
 def handle_adducts(
     input_csv,
-    output_folder="results",
-    rt_tolerance_seconds=6
+    output_folder,
+    rt_tolerance_seconds=6,
+    pol_tag: str = ""
 ):
+
     """
     Collapse redundant adduct peaks for the same lipid annotation.
 
@@ -22,7 +46,8 @@ def handle_adducts(
              b) Highest mean intensity.
       3. All other redundant peaks are removed and logged.
     """
-    print(f'\nHandling adducts...\n')
+    
+    print(f'\nHandling adducts...\n', flush = True)
     input_csv = Path(input_csv)
     output_folder = Path(output_folder)
     output_folder.mkdir(parents=True, exist_ok=True)
@@ -34,9 +59,9 @@ def handle_adducts(
         raise ValueError("Input file must contain 'Annotation' and 'RT (min)' columns.")
 
     # Identify sample columns
-    sample_cols = [c for c in df.columns if c.startswith("[POS") or c.startswith("[NEG]")]
+    sample_cols = [c for c in df.columns if c.startswith("P_") or c.startswith("N_")]
     if not sample_cols:
-        raise ValueError("No sample columns found. Expected columns starting with [POS or [NEG].")
+        raise ValueError("No sample columns found. Expected columns starting with P_ or N_.")
 
     # Normalize Annotation Type for consistent comparison
     if "Annotation Type" in df.columns:
@@ -84,19 +109,6 @@ def handle_adducts(
         print(f"[INFO] Skipping {len(is_df)} internal standard features from adduct collapsing.", flush=True)
 
     # -----------------------------------------------------------------
-    # Normalize "unknown-like" annotations to NaN and group
-    # -----------------------------------------------------------------
-    _unknown_tokens = {"", "nan", "n/a", "none", "unassigned", "unknown", "no match"}
-    ann_norm = (
-        df["Annotation"]
-        .astype(str)
-        .str.strip()
-        .str.casefold()
-        .map(lambda s: np.nan if s in _unknown_tokens else s)
-    )
-    df["Annotation_norm"] = ann_norm
-
-    # -----------------------------------------------------------------
     # Collapse adducts within annotation, keeping NaN (unknown) group intact
     # -----------------------------------------------------------------
     for ann, group in df.groupby("Annotation_norm", dropna=False):
@@ -109,8 +121,48 @@ def handle_adducts(
 
         while len(group_sorted) > 0:
             ref = group_sorted.iloc[0]
-            window_mask = np.abs(group_sorted["RT_seconds"] - ref["RT_seconds"]) <= rt_tolerance_seconds
-            window_group = group_sorted[window_mask].copy()
+
+            # Step 1: RT filtering
+            rt_mask = np.abs(group_sorted["RT_seconds"] - ref["RT_seconds"]) <= rt_tolerance_seconds
+            rt_group = group_sorted[rt_mask].copy()
+
+            # Step 2: neutral mass filtering
+            if "Neutral mass" not in group_sorted.columns:
+                raise ValueError("Input file must contain 'Neutral mass' for adduct handling.")
+
+            ref_mass = ref["Neutral mass"]
+
+            mass_mask = rt_group["Neutral mass"].apply(
+                lambda m: _mass_within_tolerance(ref_mass, m)
+            )
+
+            # Final candidate group
+            window_group = rt_group[mass_mask].copy()
+
+            # --- HARD GUARD: if empty, keep the reference row and move on ---
+            if window_group.empty:
+                ref_row = ref.to_frame().T.copy()
+                # make sure helper cols exist for consistent output
+                ref_row["missing_count"] = ref_row[sample_cols].isna().sum(axis=1).values
+                ref_row["mean_intensity"] = ref_row[sample_cols].mean(axis=1, skipna=True).values
+                kept_rows.append(ref_row)
+
+                debug_entries.append({
+                    "Annotation": ann,
+                    "Kept_mz": ref.get("m/z", np.nan),
+                    "Kept_RT(min)": ref.get("RT (min)", np.nan),
+                    "Kept_Type": ref.get("Annotation Type", ""),
+                    "Kept_Adduct": ref.get("Adducts", ""),
+                    "Kept_missing_values": int(ref_row["missing_count"].iloc[0]),
+                    "Kept_mean_intensity": float(ref_row["mean_intensity"].iloc[0]) if np.isfinite(ref_row["mean_intensity"].iloc[0]) else np.nan,
+                    "Removed_count": 0,
+                    "Removed_features": "",
+                    "Note": "window_group empty after mass filter (kept ref only)"
+                })
+
+                # Drop just the ref row so the loop progresses
+                group_sorted = group_sorted.drop(ref.name)
+                continue
 
             # Compute missing values and mean intensity
             window_group["missing_count"] = window_group[sample_cols].isna().sum(axis=1)
@@ -155,10 +207,11 @@ def handle_adducts(
 
     removed_df = pd.concat(removed_rows, ignore_index=True) if removed_rows else pd.DataFrame()
 
-    # Save outputs
-    kept_path = debug_folder / "2-Final_annotated_results_adducts_collapsed.csv"
-    removed_path = debug_folder / "removed_adducts.csv"
-    summary_path = debug_folder / "adduct_collapse_summary.csv"
+    # Save outputs (polarity-tagged so POS/NEG do not overwrite each other)
+    kept_path = debug_folder / f"{pol_tag}2-Final_annotated_results_adducts_collapsed.csv"
+    removed_path = debug_folder / f"{pol_tag}Removed_adducts.csv"
+    summary_path = debug_folder / f"{pol_tag}Adduct_collapse_summary.csv"
+
 
     kept_df.to_csv(kept_path, index=False, encoding="utf-8-sig")
     if not removed_df.empty:

@@ -1,9 +1,9 @@
-import os
 import warnings
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+from pathlib import Path
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.model_selection import cross_val_score, KFold
@@ -12,35 +12,51 @@ from matplotlib.patches import Ellipse
 from Stats.utils import load_dataset, prepare_output_dir
 
 warnings.filterwarnings("ignore", category=FutureWarning)
-plt.rcParams['font.family'] = 'Arial'
-plt.rcParams['font.size'] = 12
+warnings.simplefilter("ignore", pd.errors.PerformanceWarning)
 
+import matplotlib as mpl
+mpl.rcParams["font.family"] = "sans-serif"
+mpl.rcParams["font.sans-serif"] = ["DejaVu Sans", "Arial", "Liberation Sans"]
+mpl.rcParams["mathtext.default"] = "regular" 
+
+plt.rcParams["font.size"] = 14
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message="Glyph .* missing from font.*")
 
 # ==========================================================
 # Helper functions
 # ==========================================================
 def make_distinct_palette(groups):
-    """Return a dict {group: rgb} with enough distinct colors."""
-    groups = list(groups)
-    n = len(groups)
+    """Return a dict {group: rgb} with enough distinct colors.
+    - QC (any case) is always black and does not consume a color slot.
+    - Supports many classes via tab palettes + HUSL fallback.
+    """
+    groups = [str(g) for g in groups]
+    unique_in_order = list(dict.fromkeys(groups))
 
+    non_qc = [g for g in unique_in_order if g.lower() != "qc"]
+    has_qc = any(g.lower() == "qc" for g in unique_in_order)
+
+    n = len(non_qc)
     if n <= 10:
         base = sns.color_palette("tab10", n_colors=n)
     elif n <= 20:
         base = sns.color_palette("tab20", n_colors=n)
     elif n <= 32:
-        # tab20 + tab20b + tab20c concatenated
         base = (
             sns.color_palette("tab20", 20)
-            + sns.color_palette("tab20b", 20)[:6]
-            + sns.color_palette("tab20c", 20)[:6]
-        )
-        base = base[:n]
+            + sns.color_palette("tab20b", 20)
+            + sns.color_palette("tab20c", 20)
+        )[:n]
     else:
-        # Arbitrary many, still reasonably distinct
-        base = sns.husl_palette(n, s=.9, l=.55)
+        base = sns.husl_palette(n, s=0.9, l=0.55)
 
-    return {g: base[i] for i, g in enumerate(groups)}
+    cmap = {g: base[i] for i, g in enumerate(non_qc)}
+    if has_qc:
+        for g in unique_in_order:
+            if g.lower() == "qc":
+                cmap[g] = "#000000"
+    return cmap
         
 def get_cov_ellipse(cov, center, nstd=1.96, **kwargs):
     eigvals, eigvecs = np.linalg.eigh(cov)
@@ -80,27 +96,52 @@ def permutation_test(X, y, pls, n_permutations=100):
 
 
 def calculate_q2_and_accuracy(pls, X, y, n_folds=5):
-    """Compute Q² and mean accuracy using K-fold CV."""
-    kf = KFold(n_splits=n_folds, shuffle=True)
-    y_true, y_pred_cont = [], []
+    """Compute Q² and mean accuracy using K-fold CV.
+    - Binary: threshold at 0.5 like before.
+    - Multiclass: classify by nearest group centroid in score space.
+    """
+    from sklearn.model_selection import KFold
+    kf = KFold(n_splits=n_folds, shuffle=True, random_state=42)
+
+    y_true_all, y_pred_cont_all = [], []
     accuracies = []
+    n_classes = len(np.unique(y))
 
     for train_idx, test_idx in kf.split(X):
         pls_cv = PLSRegression(n_components=pls.n_components)
         pls_cv.fit(X[train_idx], y[train_idx])
-        pred = pls_cv.predict(X[test_idx]).ravel()
-        y_true.append(y[test_idx])
-        y_pred_cont.append(pred)
-        y_pred_class = np.where(pred > 0.5, 1, 0)
-        accuracies.append(accuracy_score(y[test_idx], y_pred_class))
 
-    y_true = np.concatenate(y_true)
-    y_pred_cont = np.concatenate(y_pred_cont)
-    press = np.sum((y_true - y_pred_cont) ** 2)
-    tss = np.sum((y_true - np.mean(y_true)) ** 2)
-    q2 = 1 - (press / tss)
-    return q2, np.mean(accuracies)
+        # Continuous predictions for Q2
+        pred_cont = pls_cv.predict(X[test_idx]).ravel()
+        y_true_fold = y[test_idx]
 
+        # Classification for accuracy
+        if n_classes == 2:
+            y_pred_cls = (pred_cont > 0.5).astype(int)
+        else:
+            # Project both train and test into score space; use nearest centroid of training groups
+            T_train = pls_cv.transform(X[train_idx])[:, :2]
+            T_test  = pls_cv.transform(X[test_idx])[:, :2]
+            centroids = {c: T_train[y[train_idx] == c].mean(axis=0) for c in np.unique(y)}
+            # assign closest centroid
+            y_pred_cls = np.array([
+                min(centroids.keys(), key=lambda c: np.linalg.norm(t - centroids[c]))
+                for t in T_test
+            ])
+
+        # Accuracy on class labels
+        accuracies.append((y_pred_cls == y_true_fold).mean())
+
+        # Accumulate for Q2
+        y_true_all.append(y_true_fold)
+        y_pred_cont_all.append(pred_cont)
+
+    y_true_all = np.concatenate(y_true_all)
+    y_pred_cont_all = np.concatenate(y_pred_cont_all)
+    press = np.sum((y_true_all - y_pred_cont_all) ** 2)
+    tss = np.sum((y_true_all - np.mean(y_true_all)) ** 2)
+    q2 = 1 - (press / tss) if tss > 0 else np.nan
+    return q2, float(np.mean(accuracies))
 
 def calculate_vip(pls, X):
     """Calculate Variable Importance in Projection (VIP) scores."""
@@ -135,59 +176,67 @@ def plot_vip(vip_scores,
     import pandas as pd
     import matplotlib.pyplot as plt
     import seaborn as sns
-
+    plt.close('all')
+    plt.ioff()
+    
     # Convert to DataFrame
-    df = pd.DataFrame({
-        "Feature": feature_names,
-        "VIP": np.asarray(vip_scores, dtype=float)
-    })
+    # Convert to DataFrame
+    df = pd.DataFrame({"Feature": feature_names, "VIP": np.asarray(vip_scores, dtype=float)})
 
     # Replace y-labels with annotations if provided
     if annotations is not None and len(annotations) == len(df):
-        df["Label"] = annotations
+        df["Label"] = pd.Series(annotations, index=df.index).astype(str)
     else:
-        df["Label"] = df["Feature"]
+        df["Label"] = df["Feature"].astype(str)
 
-    # Optionally remove numeric prefixes
+    # Clean labels optionally
     if clean_labels:
         df["Label"] = df["Label"].str.replace(r"^\d+\|", "", regex=True)
 
-    # Sort descending and truncate
+    # Sort ↓ and truncate
     df = df.sort_values("VIP", ascending=False)
     if top_n:
         df = df.head(top_n)
 
-    # Dynamic figure height (0.4 inch per variable, min 4, max 20)
+    # === Dynamic but bounded sizing ===
     n = len(df)
-    fig_height = min(20, max(4, 0.4 * n))
+    fig_height = min(10.0, max(4.0, 0.28 * n))   # cap height to avoid huge canvases
+    fig_width  = 7.5
 
-    # Plot
-    plt.figure(figsize=(7, fig_height))
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height),
+                        constrained_layout=True, facecolor="white")
+
     colors = sns.color_palette("viridis", n_colors=n)
-    bars = plt.barh(df["Label"], df["VIP"], color=colors, edgecolor="black")
+    ypos = np.arange(len(df))
+    ax.barh(ypos, df["VIP"], color=colors, edgecolor="black", linewidth=0.6)
+    ax.set_yticks(ypos)
+    ax.set_yticklabels(df["Label"])
 
-    # Flip Y so highest VIP is at top
-    plt.gca().invert_yaxis()
+    if df["Label"].duplicated().any():
+        df["Label"] = df["Label"] + df.groupby("Label").cumcount().add(1).astype(str).radd(" (") + ")"
 
-    # Aesthetics
-    plt.title("Variable Importance in Projection (VIP) Scores", fontsize=14, pad=15, weight="bold")
-    plt.xlabel("VIP Scores", fontsize=14, labelpad = 12)
-    plt.ylabel("Variables", fontsize=14, labelpad = 12)
-    plt.xticks(fontsize=12)
-    plt.yticks(fontsize=10)
-    plt.grid(axis="x", linestyle="--", linewidth=0.5, alpha=0.6)
-    
-    # Adjust layout and add padding to avoid cropping the title
-    plt.tight_layout(rect=[0, 0, 1, 0.97])  # leaves 3% space at top for title
-    plt.savefig(save_dir / filename, dpi=300, bbox_inches="tight", pad_inches=0.2)
-    plt.savefig(save_dir / filename.replace(".png", ".svg"), dpi=300, bbox_inches="tight", pad_inches=0.2)
-    plt.close()
+    ax.invert_yaxis()
+
+    ax.set_title("Variable Importance in Projection (VIP) Scores", fontsize=14, pad=12, fontweight="bold")
+    ax.set_xlabel("VIP Scores", fontsize=12, labelpad=10)
+    ax.set_ylabel("Variables", fontsize=12, labelpad=10)
+    ax.grid(axis="x", linestyle="--", linewidth=0.5, alpha=0.6)
+
+    # Add full rectangular border
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.0)
+        spine.set_color("black")
+
+    fig.savefig(save_dir / filename, dpi=100, bbox_inches="tight", pad_inches=0.15, facecolor="white")
+    fig.savefig(save_dir / filename.replace(".png", ".svg"), dpi=100, bbox_inches="tight", pad_inches=0.15, facecolor="white")
+    plt.close(fig)
 
 # ==========================================================
 # Main PLS-DA runner
 # ==========================================================
-def run_plsda(file_path, group_file, save_dir):
-    print(f"[PLS-DA] Running analysis for: {file_path.name}", flush = True)
+def run_plsda(file_path, group_file, save_dir, group_colors=None, group_order=None):
+    print(f"[PLS-DA] Running analysis for: {Path(file_path).name}", flush=True)
 
     # === Load standardized dataset ===
     X, y_labels, feature_meta = load_dataset(file_path, group_file)
@@ -213,6 +262,8 @@ def run_plsda(file_path, group_file, save_dir):
     scores = pls.transform(X_scaled)
     plsda_df = pd.DataFrame(scores[:, :2], columns=['Component 1', 'Component 2'], index=X.index)
     plsda_df['Group'] = y_labels.values
+    # Save PLS-DA scores for downstream use
+    plsda_df.to_csv(save_dir / "PLSDA_scores.csv", index=True, encoding="utf-8-sig")
 
     # --- Evaluate model performance ---
     r2_true, p_value = permutation_test(X_scaled, y, pls, n_permutations=100)
@@ -222,16 +273,33 @@ def run_plsda(file_path, group_file, save_dir):
     # SCORES PLOT
     # ==========================================================
     plt.figure(figsize=(9, 6))
-    groups = list(pd.unique(y_labels))  # stable order
-    color_map = make_distinct_palette(groups)
+    # Derive ordered groups (respect GUI order if provided)
+    natural = list(pd.unique(y_labels.astype(str)))
+    if group_order:
+        groups = [g for g in group_order if g in natural] + [g for g in natural if g not in group_order]
+    else:
+        groups = natural
+
+    # Colors: user palette takes precedence; fill gaps with distinct palette; QC forced to black
+    if isinstance(group_colors, dict) and group_colors:
+        color_map = {g: group_colors.get(g) for g in groups}
+        # backfill any None with generated colors
+        gen_map = make_distinct_palette(groups)
+        for g in groups:
+            if not color_map.get(g):
+                color_map[g] = gen_map[g]
+    else:
+        color_map = make_distinct_palette(groups)
 
     ax = sns.scatterplot(
         data=plsda_df,
         x='Component 1', y='Component 2',
         hue='Group',
-        palette=color_map,   # dict → stable colors even with many groups
+        hue_order=groups,
+        palette=color_map,
         s=100, alpha=0.95, edgecolor='black'
     )
+
 
     # 95% confidence ellipses using the same colors
     for group in groups:
@@ -257,19 +325,29 @@ def run_plsda(file_path, group_file, save_dir):
     ax.set_ylim(ylims[0] - (ylims[1] - ylims[0]) * 0.1,
                 ylims[1] + (ylims[1] - ylims[0]) * 0.1)
 
-    plt.xlabel(f"Component 1 ({explained_variance[0]:.1f}% variance)", labelpad = 12)
-    plt.ylabel(f"Component 2 ({explained_variance[1]:.1f}% variance)", labelpad = 12)
+    ev1 = explained_variance[0] if len(explained_variance) > 0 else 0.0
+    ev2 = explained_variance[1] if len(explained_variance) > 1 else 0.0
+    plt.xlabel(f"Component 1 ({ev1:.1f}% variance)", labelpad=12)
+    plt.ylabel(f"Component 2 ({ev2:.1f}% variance)", labelpad=12)
     plt.title("PLS-DA Scores Plot", fontsize=14)
-    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left",
-              fontsize=14, title_fontsize=14, borderaxespad=0)
+    # --- Legend (outside right, non-cropped on save) ---
+    fig = plt.gcf()
+    ax.legend(
+        bbox_to_anchor=(1.02, 1),
+        loc="upper left",
+        fontsize=12,
+        title_fontsize=12,
+        borderaxespad=0.0,
+        frameon=False,
+    )
 
-    # Add bottom line with stats
+    # --- Bottom stats line ---
     extra_text = (
         f"5-fold CV | Opt. comps: {optimal_components} | "
         f"R² = {r2_true:.3f} | Q² = {q2_value:.3f} | "
-        f"Accuracy = {avg_acc:.3f} | p (100 perm) = {p_value:.3f}"
+        f"Accuracy = {avg_acc:.3f} | p (100 perm) = {p_value:.3g}"
     )
-    # Place text centered under the plot area (not tied to figure coords)
+
     ax.text(
         0.5, -0.18, extra_text,
         ha="center", va="top",
@@ -277,9 +355,25 @@ def run_plsda(file_path, group_file, save_dir):
         fontsize=11, color="dimgray"
     )
 
-    plt.tight_layout()
-    plt.savefig(save_dir / "PLSDA_2D.png", dpi=300, bbox_inches="tight")
-    plt.close()
+    ax.set_aspect("equal", adjustable="datalim")
+
+    # Add full rectangular border
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.0)
+        spine.set_color("black")
+
+    # --- Adjust and save properly ---
+    fig.subplots_adjust(right=0.80)
+    fig.savefig(
+        save_dir / "PLSDA_2D.png",
+        dpi=100,
+        bbox_inches="tight",
+        pad_inches=0.3,
+        facecolor="white",
+    )
+    plt.close(fig)
+
 
     # ==========================================================
     # VIP SCORES
@@ -318,6 +412,10 @@ def run_plsda(file_path, group_file, save_dir):
     else:
         vip_with_meta = vip_df.copy()
 
+    # Save VIPs (sorted) with full metadata, plus a minimal table
+    vip_with_meta_sorted = vip_with_meta.sort_values("VIP", ascending=False)
+    vip_with_meta_sorted.to_csv(save_dir / "PLSDA_VIP_with_metadata.csv", index=False, encoding="utf-8-sig")
+    vip_df.sort_values("VIP", ascending=False).to_csv(save_dir / "PLSDA_VIP.csv", index=False, encoding="utf-8-sig")
 
     # ==========================================================
     # VIP PLOTS
@@ -332,6 +430,20 @@ def run_plsda(file_path, group_file, save_dir):
                  filename=f"VIP_scores_plot_top{topn}.png",
                  top_n=topn,
                  annotations=annotations)
+
+    # === X-loadings with metadata (traceability) ===
+    x_load = pd.DataFrame(pls.x_loadings_[:, :2], index=X.columns, columns=["Comp1_loading", "Comp2_loading"])
+    x_load.index.name = "UniqueID"
+    xl = x_load.reset_index()
+    xl["UniqueID"] = xl["UniqueID"].astype(str)
+
+    fm = feature_meta.reset_index() if "UniqueID" in getattr(feature_meta, "index", pd.Index([])).names else feature_meta
+    if isinstance(fm, pd.DataFrame) and "UniqueID" in fm.columns:
+        fm = fm.copy()
+        fm["UniqueID"] = fm["UniqueID"].astype(str)
+        xl = xl.merge(fm, on="UniqueID", how="left")
+
+    xl.to_csv(save_dir / "PLSDA_Xloadings_with_metadata.csv", index=False, encoding="utf-8-sig")
 
     print(f"[PLS-DA] Completed successfully → {save_dir}\n", flush = True)
 

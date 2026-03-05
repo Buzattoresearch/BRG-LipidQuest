@@ -1,4 +1,33 @@
-#TODO: Check filtering performance.
+
+'''
+This script is designed to remove background noise, contaminants, and unstable or poorly detected features. Internal standards are not affected. The result is a cleaner, more statistically reliable feature table for downstream lipidomics.
+This is a multi-stage filter that targets:
+    
+    known contaminant masses (explicit blacklist): each detected m/z is compared to a list of known background contaminants. If a feature matches a known contaminant mass (within a small tolerance of 5 ppm), it is removed. 
+    Example: common plasticizers, solvent background, media components, etc.
+    
+    near-constant peaks across samples at the bottom or top of intensity distribution (baseline bleed and saturation artifacts). It looks for features that:
+        Have almost no variation across samples
+        Are consistently very low intensity (baseline noise)
+        Or consistently extremely high intensity (detector saturation)
+        If a peak is basically constant across all samples and sits at the very low or very high end of intensity, it is flagged and removed.
+    
+    repeated low-intensity m/z “clones”
+        If the same mass shows up multiple times at low intensity with nearly identical signal patterns, the script keeps the best representative and removes the redundant duplicates.
+        This helps clean up repeated background artifacts.
+        
+    unstable features in QC (RSD >70%), with a stability-based rescue
+        If QC samples are defined, it calculates how much each feature varies across QCs.
+        If variation is too high (>70% for raw intensities - before normalization), the feature is removed. However, there is a safeguard:
+        If a feature is stable within at least one biological group (RSD sample <30%), it is rescued even if QC variability is high.
+    
+    features with poor detection rates within groups
+        If a minimum intensity threshold is provided, features below that average intensity are removed (default: 3000).
+        
+    features that are rarely detected
+        For each biological group, the script checks how often a feature is detected.
+        If a feature is missing in too many samples across all groups (detected in less than 80% across all sample groups), it is removed. This eliminates features that are mostly absent or sporadic.                  
+'''
 
 import re
 from pathlib import Path
@@ -34,17 +63,16 @@ def _load_contaminants_by_polarity(contaminant_csv_path):
         "neg": cdf.loc[cdf["polarity"] == "neg", "m/z"].astype(float).tolist(),
     }
 
-
 def _auto_mz_col(df):
     for cand in ["m/z meas.", "m/z", "m/z measured", "mz"]:
         if cand in df.columns:
             return cand
     raise ValueError("Could not find an m/z column.")
 
-
 # -------------------------------------------------------------------------
 # Baseline contaminant detection
 # -------------------------------------------------------------------------
+
 def _row_is_internal_standard(row, is_columns=("IS","Type","Sample Type")):
     """Return True if any column suggests an internal standard."""
     for col in is_columns:
@@ -62,27 +90,51 @@ def _row_is_internal_standard(row, is_columns=("IS","Type","Sample Type")):
 
 def detect_flat_features(
     df: pd.DataFrame,
-    prefix="[POS",
+    prefix="P_",
     rel_std_thresh=0.05,
-    intensity_quantile_low=0.01,
-    intensity_quantile_high=0.998,
+    rel_std_thresh_high=1.2,
+    intensity_quantile_low=0.10,
+    intensity_quantile_high=0.99,
     debug_folder=None,
     plot=True,
     exclude_is=True,
-    is_columns=("IS","Type","Sample Type")
+    is_columns=("IS","Type","Sample Type"),
+    pol_tag: str = ""
 ):
+
     print("\nRemoving flat-intensity features (baseline contaminants or saturated features)...\n")
 
     # 1) pick sample columns for this polarity
-    sample_cols = [c for c in df.columns if str(c).strip().startswith(prefix)]
+    # prefix may be None (P_/N_ workflow)
+    if prefix is None:
+        # Do NOT select any sample columns — skip baseline detection entirely
+        print("\n===== prefix=None → skipping baseline/saturation detection =====\n")
+        return [], pd.DataFrame(columns=df.columns)
+
+    # Normal behavior for prefix = "P_" or "N_" or "[POS"
+    sample_cols = [c for c in df.columns if isinstance(c, str) and c.strip().startswith(prefix)]
     if not sample_cols:
         print(f"\n===== No sample columns found starting with '{prefix}'. Skipping baseline detection. =====\n")
         return [], pd.DataFrame(columns=df.columns)
 
+
     # 2) mean and RSD
-    sample_data   = df[sample_cols].apply(pd.to_numeric, errors="coerce")
-    mean_intensity = sample_data.mean(axis=1)
-    rel_std        = sample_data.std(axis=1) / mean_intensity.replace(0, np.nan)
+    sample_data = df[sample_cols].apply(pd.to_numeric, errors="coerce")
+
+    # Treat non-detections as missing for baseline stats
+    detect_mask = sample_data > 1e-9
+    n_detect = detect_mask.sum(axis=1)
+
+    sample_data_det = sample_data.mask(~detect_mask, np.nan)
+
+    mean_intensity = sample_data_det.mean(axis=1)
+    rel_std = sample_data_det.std(axis=1, ddof=1) / mean_intensity.replace(0, np.nan)
+
+    # Optional: make RSD undefined when too few detections
+    rel_std = rel_std.where(n_detect >= 3, np.nan)
+
+    # Store for plotting/debug
+    df["_N_detect"] = n_detect
 
     # 3) safe quantiles (avoid empty / all-NaN)
     vals = mean_intensity.to_numpy()
@@ -105,23 +157,29 @@ def detect_flat_features(
     is_mask = df.apply(_row_is_internal_standard, axis=1) if exclude_is else pd.Series(False, index=df.index)
 
     # 5) classify
-    baseline_mask  = (rel_std < rel_std_thresh) & (mean_intensity <= q_low)  & (~is_mask)
-    saturated_mask = (rel_std < rel_std_thresh) & (mean_intensity >= q_high) & (~is_mask)
-    combined_mask  = baseline_mask | saturated_mask
+    baseline_mask       = (rel_std < rel_std_thresh)       & (mean_intensity <= q_low)  & (~is_mask)
+    baseline_mask_high  = (rel_std > rel_std_thresh_high)  & (mean_intensity <= q_low)  & (~is_mask)
+    saturated_mask      = (rel_std < rel_std_thresh)       & (mean_intensity >= q_high) & (~is_mask)
+    combined_mask       = baseline_mask | baseline_mask_high | saturated_mask
 
     baseline_df = df.loc[combined_mask].copy()
-    baseline_df["data_cleanup_reason"] = np.where(
-        baseline_mask.loc[combined_mask],
-        "Baseline contaminant (flat low intensity)",
-        "Saturated feature (flat high intensity)"
-    )
+
+    # explicit 3-class reason assignment, aligned to baseline_df index
+    reason = pd.Series("", index=baseline_df.index, dtype=object)
+    reason.loc[baseline_df.index[baseline_mask.loc[baseline_df.index]]] = "Baseline contaminant (flat low intensity)"
+    reason.loc[baseline_df.index[baseline_mask_high.loc[baseline_df.index]]] = "Low-intensity unstable feature (high RSD)"
+    reason.loc[baseline_df.index[saturated_mask.loc[baseline_df.index]]] = "Saturated feature (flat high intensity)"
+    baseline_df["data_cleanup_reason"] = reason.values
 
     # annotate for plotting/logging
     df["_MeanIntensity"] = mean_intensity
     df["_RelStd"] = rel_std
     df["_Flag"] = combined_mask.astype(int)
-    df["_FlagType"] = np.where(baseline_mask, "baseline",
-                        np.where(saturated_mask, "saturated", "none"))
+
+    df["_FlagType"] = "none"
+    df.loc[baseline_mask, "_FlagType"] = "baseline"
+    df.loc[baseline_mask_high, "_FlagType"] = "baseline_high"
+    df.loc[saturated_mask, "_FlagType"] = "saturated"
 
     n_total     = len(df)
     n_baseline  = int(baseline_mask.sum())
@@ -139,7 +197,7 @@ def detect_flat_features(
     # write report
     if debug_folder:
         d = Path(debug_folder); d.mkdir(parents=True, exist_ok=True)
-        with open(d / "baseline_filter_report.txt", "w", encoding="utf-8") as f:
+        with open(d / f"{pol_tag}baseline_filter_report.txt", "w", encoding="utf-8") as f:
             f.write(f"Baseline/saturation detection ({prefix})\n")
             f.write(f"rel_std_thresh = {rel_std_thresh}\n")
             f.write(f"intensity_quantile_low  = {intensity_quantile_low}\n")
@@ -151,22 +209,52 @@ def detect_flat_features(
 
         if plot:
             try:
-                plt.figure(figsize=(7,6))
-                plt.scatter(df["_MeanIntensity"], df["_RelStd"], s=20, alpha=0.3, color="gray", label="All")
+                n_baseline_high = int(baseline_mask_high.sum())
+
+                plt.figure(figsize=(7, 6))
+                plt.scatter(
+                    df["_MeanIntensity"], df["_RelStd"],
+                    s=20, alpha=0.3, color="gray", label="All"
+                )
+
                 if n_baseline:
-                    plt.scatter(df.loc[baseline_mask, "_MeanIntensity"], df.loc[baseline_mask, "_RelStd"],
-                                s=25, label=f"Baseline (n={n_baseline})", color="red")
+                    plt.scatter(
+                        df.loc[baseline_mask, "_MeanIntensity"],
+                        df.loc[baseline_mask, "_RelStd"],
+                        s=25, color="red", label=f"Baseline (n={n_baseline})"
+                    )
+
+                if n_baseline_high:
+                    plt.scatter(
+                        df.loc[baseline_mask_high, "_MeanIntensity"],
+                        df.loc[baseline_mask_high, "_RelStd"],
+                        s=25, color="magenta", label=f"Low-int unstable (n={n_baseline_high})"
+                    )
+
                 if n_saturated:
-                    plt.scatter(df.loc[saturated_mask, "_MeanIntensity"], df.loc[saturated_mask, "_RelStd"],
-                                s=25, label=f"Saturated (n={n_saturated})", color="orange")
+                    plt.scatter(
+                        df.loc[saturated_mask, "_MeanIntensity"],
+                        df.loc[saturated_mask, "_RelStd"],
+                        s=25, color="orange", label=f"Saturated (n={n_saturated})"
+                    )
+
                 plt.axhline(rel_std_thresh, color="blue", ls="--", lw=1, label=f"RSD<{rel_std_thresh}")
+                plt.axhline(rel_std_thresh_high, color="magenta", ls="--", lw=1, label=f"RSD>{rel_std_thresh_high}")
                 plt.axvline(q_low,  color="purple", ls=":", lw=1, label=f"Low q{intensity_quantile_low*100:.1f}")
                 plt.axvline(q_high, color="green",  ls=":", lw=1, label=f"High q{intensity_quantile_high*100:.1f}")
-                plt.xscale("log"); plt.yscale("log")
-                plt.xlabel("Mean Intensity (log)"); plt.ylabel("RSD (std/mean, log)")
-                plt.title(f"Baseline & Saturation ({prefix})"); plt.legend(); plt.tight_layout()
-                plt.savefig(Path(debug_folder) / "Baseline_flag_vs_meanIntensity.png", dpi=300)
+
+                plt.xscale("log")
+                plt.yscale("log")
+                plt.xlabel("Mean Intensity (log)")
+                plt.ylabel("RSD (std/mean, log)")
+                plt.title(f"Baseline & Saturation ({prefix})")
+                plt.legend()
+                plt.tight_layout()
+                plt.savefig(Path(debug_folder) / f"{pol_tag}Baseline_flag_vs_meanIntensity.png", dpi=100)
                 plt.close()
+            except Exception as e:
+                print(f"[WARNING] Plot failed: {e}")
+
             except Exception as e:
                 print(f"[WARNING] Plot failed: {e}")
 
@@ -176,17 +264,19 @@ def detect_flat_features(
 # -------------------------------------------------------------------------
 # Main data cleansing
 # -------------------------------------------------------------------------
+
 def apply_data_cleansing(
     df: pd.DataFrame,
     output_folder,
     contaminant_file="Appendix/Contaminants.csv",
     ppm_tolerance=5,
     min_int=None,
-    prefix="[POS",
-    rsd_thresh=None,                
-    rsd_qc_thresh=30.0,
+    prefix="P_",
+    rsd_thresh=None,
+    rsd_qc_thresh=75.0,      # percent
+    qc_min_cols=3,
     min_detect_in_group=80.0,
-    max_group_rsd_thresh=50.0
+    **_
 ):
 
     """
@@ -195,23 +285,37 @@ def apply_data_cleansing(
       2. Remove baseline/saturated features
       3. Remove features below intensity threshold
       4. Apply statistical QC filters:
-         - High QC RSD
          - Low within-group detection
-         - High group RSD
+        * RSD filtering is applied after normalization
 
     Outputs (under output_folder/debug):
         Removed_contaminants.csv
         Removed_baseline.csv
         Cleaned_data.csv
     """
+    
     output_folder = Path(output_folder)
     debug_folder = output_folder / "debug"
     debug_folder.mkdir(parents=True, exist_ok=True)
 
     print(f'\nApplying data cleansing... \n')
 
+    # --- Determine polarity tag for output filenames ---
+    if "Polarity" in df.columns:
+        first_pol = df["Polarity"].dropna().astype(str).str.lower().iloc[0]
+        if "pos" in first_pol:
+            pol_tag = "Pos_"
+        elif "neg" in first_pol:
+            pol_tag = "Neg_"
+        else:
+            pol_tag = ""
+    else:
+        pol_tag = ""
+
+
     if rsd_thresh is None:
-        rsd_thresh = 0.075
+        rsd_thresh = 0.05
+        
     # --- 1. Remove known m/z contaminants ---
     if "Polarity" not in df.columns:
         raise ValueError("Input DataFrame must have a 'Polarity' column.")
@@ -252,14 +356,21 @@ def apply_data_cleansing(
     removed_known = df.loc[remove_flag].copy()
     if not removed_known.empty:
         removed_known["data_cleanup_reason"] = reasons[remove_flag]
-        removed_known.to_csv(debug_folder / "Removed_contaminants.csv", index=False, encoding="utf-8-sig")
+        removed_known.to_csv(debug_folder / f"{pol_tag}Removed_contaminants.csv", index=False, encoding="utf-8-sig")
 
     df_clean = df.loc[~remove_flag].copy()
 
-    # --- 2. Baseline contaminants ---
-    baseline_indices, baseline_df = detect_flat_features(df_clean, prefix=prefix, rel_std_thresh=rsd_thresh, debug_folder=debug_folder)
+    #    # --- 2. Baseline contaminants ---
+    baseline_indices, baseline_df = detect_flat_features(
+        df_clean,
+        prefix=prefix,
+        rel_std_thresh=rsd_thresh,
+        rel_std_thresh_high=1.2,
+        debug_folder=debug_folder,
+        pol_tag=pol_tag
+    )
     if not baseline_df.empty:
-        baseline_df.to_csv(debug_folder / "Removed_baseline.csv", index=False, encoding="utf-8-sig")
+        baseline_df.to_csv(debug_folder / f"{pol_tag}Removed_baseline.csv", index=False, encoding="utf-8-sig")
         df_clean = df_clean.drop(index=baseline_indices)
 
     # --- 2.5 Remove repeated low-intensity m/z detections with similar intensities ---
@@ -272,7 +383,7 @@ def apply_data_cleansing(
     similarity_tolerance = 1.00         # ±100% relative difference allowed between intensities
 
     # Compute per-feature mean intensity
-    sample_cols = [c for c in df_clean.columns if c.startswith("[POS") or c.startswith("[NEG]")]
+    sample_cols = [c for c in df_clean.columns if c.startswith("P_") or c.startswith("N_")]
     df_clean["_mean_intensity"] = df_clean[sample_cols].apply(pd.to_numeric, errors="coerce").mean(axis=1)
 
     # Round m/z to the third decimal for grouping
@@ -308,7 +419,7 @@ def apply_data_cleansing(
         removed_dup_df["data_cleanup_reason"] = (
             f"Duplicate low-intensity m/z (≥{repetition_threshold} detections, <{low_intensity_threshold}, similar ±{similarity_tolerance*100:.0f}%)"
         )
-        removed_dup_df.to_csv(debug_folder / "Removed_duplicate_low_intensity_mz.csv",
+        removed_dup_df.to_csv(debug_folder / f"{pol_tag}Removed_duplicate_low_intensity_mz.csv",
                               index=False, encoding="utf-8-sig")
         print(f"Removed {len(removed_dup_df)} repeated low-intensity m/z features with similar intensities.", flush=True)
 
@@ -320,8 +431,99 @@ def apply_data_cleansing(
     # --- Identify Internal Standards (IS) to exclude from all statistical filtering ---
     is_mask = df_clean.apply(_row_is_internal_standard, axis=1)
     print(f"[INFO] Identified {is_mask.sum()} internal standards to skip during filtering", flush=True)
+    
+    # --- 3 Rough QC RSD filter (based on sample_groups.csv, Group == 'QC') ---
+    print(f"\n[STEP] QC RSD filtering (sample_groups.csv, Group == 'QC')... (threshold: {rsd_qc_thresh})", flush=True)
 
-    # --- 3. Remove features below minimum intensity threshold ---
+    group_file = Path(output_folder).parent / "sample_groups.csv"
+    if not group_file.exists():
+        print(f"[WARNING] No sample_groups.csv found at {group_file} — skipping QC RSD filter.", flush=True)
+    else:
+        try:
+            group_df = pd.read_csv(group_file, low_memory=False)
+            group_map = dict(zip(group_df["Sample"], group_df["Group"]))
+
+            # Identify sample columns (same convention used elsewhere)
+            sample_cols = [c for c in df_clean.columns if isinstance(c, str) and (c.startswith("P_") or c.startswith("N_"))]
+
+            qc_cols = [c for c in sample_cols if str(group_map.get(c, "")).strip().lower() == "qc"]
+
+            if len(qc_cols) < int(qc_min_cols):
+                print(f"[WARNING] Found {len(qc_cols)} QC columns (<{qc_min_cols}) — skipping QC RSD filter.", flush=True)
+            else:
+                qc_data = df_clean[qc_cols].apply(pd.to_numeric, errors="coerce")
+
+                qc_mean = qc_data.mean(axis=1)
+                qc_std = qc_data.std(axis=1, ddof=1)
+                qc_rsd_pct = (qc_std / qc_mean.replace(0, np.nan)) * 100.0
+
+                # Require at least 2 detected QC values for RSD to mean anything
+                qc_detect_n = (qc_data.fillna(0) > 1e-9).sum(axis=1)
+
+                # ---------------------------------------------------------
+                # Rescue: keep features that are stable in at least one NON-QC group
+                # (RSD < 30% in at least one sample group)
+                # ---------------------------------------------------------
+                rescue_rsd_thresh = 30.0  # percent
+
+                # collect non-QC groups present in sample_groups.csv
+                non_qc_groups = sorted({
+                    str(g).strip() for g in group_map.values()
+                    if str(g).strip() and str(g).strip().lower() != "qc"
+                })
+
+                # default: no rescue
+                keep_due_to_group_stability = pd.Series(False, index=df_clean.index)
+
+                # compute within-group RSDs and build rescue mask
+                for g in non_qc_groups:
+                    g_cols = [c for c in sample_cols if str(group_map.get(c, "")).strip() == g]
+                    if len(g_cols) < 3:
+                        # RSD is weak with 1–2 replicates; skip group
+                        continue
+
+                    g_data = df_clean[g_cols].apply(pd.to_numeric, errors="coerce")
+                    g_mean = g_data.mean(axis=1)
+                    g_std  = g_data.std(axis=1, ddof=1)
+                    g_rsd_pct = (g_std / g_mean.replace(0, np.nan)) * 100.0
+
+                    # require at least 2 detections in the group
+                    g_detect_n = (g_data.fillna(0) > 1e-9).sum(axis=1)
+
+                    stable_in_group = (g_rsd_pct < rescue_rsd_thresh) & (g_detect_n >= 2)
+                    keep_due_to_group_stability |= stable_in_group.fillna(False)
+                    
+                remove_mask_qc = (
+                    (qc_rsd_pct > float(rsd_qc_thresh)) &
+                    (qc_detect_n >= 2) &
+                    (~is_mask) &
+                    (~keep_due_to_group_stability)
+                )
+
+                n_removed_qc = int(remove_mask_qc.sum())
+
+                if n_removed_qc > 0:
+                    
+                    removed_qc = df_clean.loc[remove_mask_qc].copy()
+                    removed_qc["QC RSD [%]"] = qc_rsd_pct.loc[remove_mask_qc].values
+                    removed_qc["_QC_N_detect"] = qc_detect_n.loc[remove_mask_qc].values
+                    removed_qc["data_cleanup_reason"] = f"QC RSD > {rsd_qc_thresh:.1f}%"
+
+                    out_path = debug_folder / f"{pol_tag}Removed_high_QC_RSD_{rsd_qc_thresh}.csv"
+                    removed_qc.to_csv(out_path, index=False, encoding="utf-8-sig")
+
+                    df_clean = df_clean.loc[~remove_mask_qc].copy()
+                    print(f"Removed {n_removed_qc} features with QC RSD > {rsd_qc_thresh:.1f}% → {out_path}", flush=True)
+                    n_rescued = int(((qc_rsd_pct > float(rsd_qc_thresh)) & (qc_detect_n >= 2) & (~is_mask) & (keep_due_to_group_stability)).sum())
+                    print(f"[INFO] QC RSD rescue kept {n_rescued} features (stable in ≥1 non-QC group, RSD<{rescue_rsd_thresh}%)", flush=True)
+                
+                else:
+                    print(f"No features removed by QC RSD > {rsd_qc_thresh:.1f}%", flush=True)
+
+        except Exception as e:
+            print(f"[WARNING] QC RSD filter skipped: {e}", flush=True)
+
+    # --- 4. Remove features below minimum intensity threshold ---
     if min_int is not None:
         if "Average Intensity (all samples)" not in df_clean.columns:
             print("[WARNING] Average Intensity column not found — skipping intensity filtering.")
@@ -341,76 +543,32 @@ def apply_data_cleansing(
             if not removed_low_intensity.empty:
                 removed_low_intensity["data_cleanup_reason"] = f"Average intensity < {min_int}"
                 removed_low_intensity.to_csv(
-                    debug_folder / "Removed_low_intensity.csv",
+                    debug_folder / f"{pol_tag}Removed_below_min_average_intensity.csv",
                     index=False,
                     encoding="utf-8-sig"
                 )
 
-    # --- 4. Additional statistical QC filters (robust + diagnostic) ---
-    qc_rsd_max = float(rsd_qc_thresh)
+    # --- 5. Additional statistical QC filters (robust + diagnostic) ---
     min_detect_frac = float(min_detect_in_group) / 100.0
-    group_rsd_max = float(max_group_rsd_thresh)
 
     print("\n=== Statistical QC Filtering Parameters ===", flush=True)
-    print(f"  QC RSD threshold            : {qc_rsd_max:.1f}%")
     print(f"  Min. detection within group : {min_detect_frac*100:.1f}%")
-    print(f"  Max. within-group RSD       : {group_rsd_max:.1f}%")
     print("============================================\n", flush=True)
 
     removed_stats = []
     debug_folder.mkdir(parents=True, exist_ok=True)
 
-    def _to_num(series):
-        return pd.to_numeric(
-            series.astype(str)
-            .str.replace("%", "", regex=False)
-            .str.replace(",", ".", regex=False)
-            .str.extract(r"([-+]?[0-9]*\.?[0-9]+)")[0]
-            .replace(["", "nan", "None"], np.nan),
-            errors="coerce"
-        )
-
-    # === 4.1 Remove features with high QC RSD (ignore missing) ===
-    qc_cols = [c for c in df_clean.columns if re.search(r"(?i)\brsd[_\s\-]*qc", c)]
-    print(f"[DEBUG] QC RSD columns detected: {qc_cols}", flush=True)
-
-    if qc_cols:
-        qc_col = qc_cols[0]
-        qc_values = _to_num(df_clean[qc_col])
-        is_mask = df_clean.apply(_row_is_internal_standard, axis=1)
-
-        mask_remove = (qc_values.notna() & (qc_values >= qc_rsd_max)) & (~is_mask)
-        mask_keep = ~mask_remove
-        n_removed = int(mask_remove.sum())
-
-        if n_removed > 0:
-            removed_rsd_df = df_clean.loc[mask_remove].copy()
-            removed_rsd_df["data_cleanup_reason"] = f"QC RSD ≥ {qc_rsd_max}%"
-            removed_rsd_df.to_csv(debug_folder / "Removed_by_RSD.csv", index=False, encoding="utf-8-sig")
-            print(f"Removed {n_removed} features with QC RSD ≥ {qc_rsd_max}%")
-            df_clean = df_clean.loc[mask_keep].copy()
-
-        else:
-            print(f"No features exceeded QC RSD ≥ {qc_rsd_max}%", flush=True)
-
-        removed_stats.append(f"High QC RSD (≥{qc_rsd_max}%)")
-    else:
-        print("[WARNING] No QC RSD column detected for filtering", flush=True)
-
-
-    # === 4.2 Remove features not detected in ≥80% of samples within any group ===
-    group_file = Path(output_folder) / "sample_groups.csv"
+    # === 4.1 Remove features not detected in ≥80% of samples within any group ===
+    group_file = Path(output_folder).parent / "sample_groups.csv"
     if group_file.exists():
         try:
             group_df = pd.read_csv(group_file, low_memory=False)
             group_map = dict(zip(group_df["Sample"], group_df["Group"]))
             group_names = sorted(set(group_map.values()))
-            print(f"[DEBUG] Groups detected for filtering: {group_names}", flush=True)
 
             detection_masks = []
             for group in group_names:
                 sample_list = [s for s, g in group_map.items() if g == group and s in df_clean.columns]
-                print(f"[DEBUG] Group {group}: {len(sample_list)} samples → {sample_list}", flush=True)
                 if not sample_list:
                     continue
 
@@ -430,7 +588,7 @@ def apply_data_cleansing(
                 if n_removed > 0:
                     removed_low_detect = df_clean.loc[remove_mask].copy()
                     removed_low_detect["data_cleanup_reason"] = f"<{min_detect_frac*100:.0f}% detected in all groups"
-                    removed_low_detect_path = debug_folder / "Removed_low_detection.csv"
+                    removed_low_detect_path = debug_folder / f"{pol_tag}Removed_low_detection.csv"
                     removed_low_detect.to_csv(removed_low_detect_path, index=False, encoding="utf-8-sig")
                     print(f"Removed {n_removed} features detected in <{min_detect_frac*100:.0f}% of samples for every group → {removed_low_detect_path}", flush=True)
                     df_clean = df_clean.loc[keep_mask].copy()
@@ -445,42 +603,9 @@ def apply_data_cleansing(
             print(f"[WARNING] Detection filter skipped: {e}", flush=True)
     else:
         print("[WARNING] No sample_groups.csv found — skipping detection filter", flush=True)
-
-
-        # === 4.3 Remove features with all group RSD ≥ 50% (ignore missing) ===
-    group_rsd_cols = [
-        c for c in df_clean.columns
-        if re.search(r"(?i)\brsd[_\s]*", c)
-        and not re.search(r"(?i)samples|qc", c)
-    ]
-    print(f"[DEBUG] Group RSD columns detected: {group_rsd_cols}", flush=True)
-
-    if group_rsd_cols:
-        df_rsd = df_clean[group_rsd_cols].apply(_to_num)
-        print(f"[DEBUG] Group RSD overall range: min={df_rsd.min().min()}, max={df_rsd.max().max()}, median={df_rsd.median().median()}", flush=True)
-
-        # Keep features if at least one group has RSD < threshold OR if all RSDs are missing
-        mask_all_na = df_rsd.isna().all(axis=1)
-        mask_keep = (df_rsd < group_rsd_max).any(axis=1) | mask_all_na
-        mask_remove = (~mask_keep) & (~is_mask)
-
-        n_removed = int(mask_remove.sum())
-        if n_removed > 0:
-            removed_high_rsd = df_clean.loc[mask_remove].copy()
-            removed_high_rsd["data_cleanup_reason"] = f"All group RSD ≥ {group_rsd_max}%"
-            removed_high_rsd_path = debug_folder / "Removed_high_group_RSD.csv"
-            removed_high_rsd.to_csv(removed_high_rsd_path, index=False, encoding="utf-8-sig")
-            print(f"Removed {n_removed} features with all group RSD ≥ {group_rsd_max}% → {removed_high_rsd_path}", flush=True)
-            df_clean = df_clean.loc[mask_keep].copy()
-        else:
-            print(f"No features removed by group RSD ≥ {group_rsd_max}% rule", flush=True)
-
-        removed_stats.append(f"All group RSD ≥ {group_rsd_max}%")
-    else:
-        print("[WARNING] No group RSD columns detected for filtering", flush=True)
-
+       
     
-    # --- 5. Plot filtering summary (accurate counts after each step) ---
+    # --- 6. Plot filtering summary (accurate counts after each step) ---
     try:
         step_labels = []
         step_counts = []
@@ -509,21 +634,8 @@ def apply_data_cleansing(
         step_labels.append("Min intensity filter")
         step_counts.append(len(df_after_intensity))
 
-        # After QC RSD ≥ threshold
-        df_after_qc = df_after_intensity.copy()
-        qc_cols = [c for c in df_after_qc.columns if re.search(r"(?i)\brsd[_\s\-]*qc", c)]
-        if qc_cols:
-            qc_col = qc_cols[0]
-            qc_values = pd.to_numeric(
-                df_after_qc[qc_col].astype(str).str.replace("%", "", regex=False),
-                errors="coerce"
-            )
-            df_after_qc = df_after_qc[qc_values < qc_rsd_max].copy()
-        step_labels.append(f"QC RSD ≥ {qc_rsd_max}%")
-        step_counts.append(len(df_after_qc))
-
         # After <80% detection rule
-        df_after_detect = df_after_qc.copy()
+        df_after_detect = df_after_intensity.copy()
         if group_file.exists():
             try:
                 group_df = pd.read_csv(group_file, low_memory=False)
@@ -544,31 +656,10 @@ def apply_data_cleansing(
                 print(f"[WARNING] Detection summary step skipped: {e}", flush=True)
         step_labels.append(f"<{min_detect_frac*100:.0f}% detected in all groups")
         step_counts.append(len(df_after_detect))
-
-        # After group RSD ≥ threshold
-        df_after_group_rsd = df_after_detect.copy()
-        group_rsd_cols = [
-            c for c in df_after_group_rsd.columns
-            if re.search(r"(?i)\brsd[_\s]*", c)
-            and not re.search(r"(?i)samples|qc", c)
-        ]
-        if group_rsd_cols:
-            df_rsd = df_after_group_rsd[group_rsd_cols].apply(
-                lambda s: pd.to_numeric(
-                    s.astype(str)
-                    .str.replace("%", "", regex=False)
-                    .str.extract(r"([-+]?[0-9]*\.?[0-9]+)")[0],
-                    errors="coerce",
-                )
-            )
-            mask_keep = (df_rsd < group_rsd_max).any(axis=1) | (df_rsd.isna().all(axis=1))
-            df_after_group_rsd = df_after_group_rsd.loc[mask_keep].copy()
-        step_labels.append(f"All group RSD ≥ {group_rsd_max}%")
-        step_counts.append(len(df_after_group_rsd))
-
+       
         # Final kept
         step_labels.append("Final (kept)")
-        step_counts.append(len(df_after_group_rsd))
+        step_counts.append(len(df_after_detect))
 
         # --- Plot ---
         fig, ax = plt.subplots(figsize=(8, 5))
@@ -582,7 +673,7 @@ def apply_data_cleansing(
             ax.text(i, count + max(step_counts) * 0.01, str(count), ha="center", va="bottom", fontsize=7)
 
         plt.tight_layout()
-        plt.savefig(debug_folder / "Filtering_summary.png", dpi=200)
+        plt.savefig(debug_folder / f"{pol_tag}Filtering_summary.png", dpi=100)
         plt.close(fig)
 
         print(f"Filtering summary plot saved → {debug_folder}/Filtering_summary.png", flush=True)
@@ -591,14 +682,14 @@ def apply_data_cleansing(
         print(f"[WARNING] Failed to generate Filtering_summary plot: {e}", flush=True)
 
     # --- Final save ---
-    df_clean.to_csv(debug_folder / "Cleaned_data.csv", index=False, encoding="utf-8-sig")
+    df_clean.to_csv(debug_folder / f"{pol_tag}Cleaned_data.csv", index=False, encoding="utf-8-sig")
     
-    with open(debug_folder / "thresholds_used.txt", "w", encoding="utf-8") as f:
+    with open(debug_folder / f"{pol_tag}thresholds_used.txt", "w", encoding="utf-8") as f:
         f.write("Data Cleansing Thresholds Used:\n")
-        f.write(f"QC RSD threshold (%)             : {qc_rsd_max}\n")
         f.write(f"Minimum detection per group (%)  : {min_detect_frac*100:.1f}\n")
-        f.write(f"Max within-group RSD threshold (%) : {group_rsd_max}\n")
         f.write(f"Flat peak RSD threshold          : {rsd_thresh}\n")
+        f.write(f"QC RSD threshold (%)             : {rsd_qc_thresh}\n")
+        f.write(f"QC min columns                   : {qc_min_cols}\n")
         f.write(f"Minimum intensity                : {min_int}\n")
 
     print(f"Removed {len(removed_known)} known contaminants and {len(baseline_df)} baseline features. "

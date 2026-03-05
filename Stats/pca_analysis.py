@@ -1,6 +1,3 @@
-# TODO: plots are missing the F stats
-# TODO: the plots without outliers are not being generated
-#TODO: more colours!
 
 import os
 import warnings
@@ -15,49 +12,73 @@ from matplotlib.patches import Ellipse
 from scipy.spatial.distance import pdist, squareform
 from scipy.stats import chi2
 from Stats.utils import load_dataset, prepare_output_dir
+from pathlib import Path
 
 warnings.filterwarnings("ignore", category=FutureWarning)
-plt.rcParams['font.family'] = 'Arial'
-plt.rcParams['font.size'] = 12
+warnings.simplefilter("ignore", pd.errors.PerformanceWarning)
 
+import matplotlib as mpl
+mpl.rcParams["font.family"] = "sans-serif"
+mpl.rcParams["font.sans-serif"] = ["DejaVu Sans", "Arial", "Liberation Sans"]
+mpl.rcParams["mathtext.default"] = "regular" 
+
+plt.rcParams["font.size"] = 14
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message="Glyph .* missing from font.*")
+plt.ioff()
 
 # ==========================================================
 # Helper functions
 # ==========================================================
-def make_distinct_palette(groups):
-    """Return a dict {group: rgb} with enough distinct colors.
-    - QC (any case) is always black and does not consume a color slot.
-    - Supports many classes via tab palettes + HUSL fallback.
+def make_distinct_palette(groups, group_colors=None):
+    """Return a dict {group: color}.
+    - Uses user-specified hex colors when provided in group_colors.
+    - QC stays black unless overridden explicitly in group_colors.
+    - Falls back to rcParams cycle, then tab palettes/HUSL for coverage.
     """
     groups = [str(g) for g in groups]
-    # preserve order of first appearance
     unique_in_order = list(dict.fromkeys(groups))
 
-    # separate QC from others
+    # separate QC
     non_qc = [g for g in unique_in_order if g.lower() != "qc"]
-    has_qc = any(g.lower() == "qc" for g in unique_in_order)
+    qc_labels = [g for g in unique_in_order if g.lower() == "qc"]
+
+    # base cycle first
+    base_cycle = plt.rcParams.get("axes.prop_cycle", None)
+    base = []
+    if base_cycle:
+        base = base_cycle.by_key().get("color", [])
 
     n = len(non_qc)
-    if n <= 10:
-        base = sns.color_palette("tab10", n_colors=n)
-    elif n <= 20:
-        base = sns.color_palette("tab20", n_colors=n)
-    elif n <= 32:
-        base = (
-            sns.color_palette("tab20", 20)
-            + sns.color_palette("tab20b", 20)
-            + sns.color_palette("tab20c", 20)
-        )[:n]
-    else:
-        # reasonably distinct for large n
-        base = sns.husl_palette(n, s=0.9, l=0.55)
+    if len(base) < n:
+        if n <= 10:
+            base = sns.color_palette("tab10", n_colors=n)
+        elif n <= 20:
+            base = sns.color_palette("tab20", n_colors=n)
+        elif n <= 32:
+            base = (
+                sns.color_palette("tab20", 20)
+                + sns.color_palette("tab20b", 20)
+                + sns.color_palette("tab20c", 20)
+            )[:n]
+        else:
+            base = sns.husl_palette(n, s=0.9, l=0.55)
 
-    cmap = {g: base[i] for i, g in enumerate(non_qc)}
-    if has_qc:
-        # assign black to every QC label variant present
-        for g in unique_in_order:
-            if g.lower() == "qc":
-                cmap[g] = "#000000"
+    cmap = {}
+    # non-QC first
+    for i, g in enumerate(non_qc):
+        if group_colors and group_colors.get(g):
+            cmap[g] = group_colors[g]
+        else:
+            cmap[g] = base[i % len(base)] if len(base) else "#1f77b4"
+
+    # QC last (black by default unless user overrides)
+    for g in qc_labels:
+        if group_colors and group_colors.get(g):
+            cmap[g] = group_colors[g]
+        else:
+            cmap[g] = "#000000"
+
     return cmap
 
 def get_cov_ellipse(cov, center, nstd=1.96, **kwargs):
@@ -124,9 +145,10 @@ def detect_outliers_mahalanobis(scores, sample_names, save_dir, alpha=0.05):
 # ==========================================================
 # PCA main function
 # ==========================================================
-def run_pca(file_path, group_file, save_dir):
+def run_pca(file_path, group_file, save_dir, group_colors=None, group_order=None):
     print(f"[PCA] Running advanced PCA for: {file_path.name}", flush = True)
-
+    plt.close('all')
+    
     if group_file is not None and os.path.exists(group_file):
         df_groups = pd.read_csv(group_file)
         qc_samples = df_groups.loc[df_groups["Group"].str.upper() == "QC", "Sample"].tolist()
@@ -159,8 +181,12 @@ def run_pca(file_path, group_file, save_dir):
 
     # === Plot PCA ===
     plt.figure(figsize=(9, 6))
-    groups_order = list(pca_df["Group"].astype(str).unique())
-    color_map = make_distinct_palette(groups_order)
+    existing = list(pca_df["Group"].astype(str).unique())
+    if group_order:
+        groups_order = [g for g in group_order if g in existing] + [g for g in existing if g not in group_order]
+    else:
+        groups_order = existing
+    color_map = make_distinct_palette(groups_order, group_colors=group_colors)
 
     ax = sns.scatterplot(
         data=pca_df,
@@ -170,6 +196,7 @@ def run_pca(file_path, group_file, save_dir):
         palette=color_map,          # dict palette
         s=90, alpha=0.95, edgecolor="black"
     )
+    fig = ax.get_figure()
 
     # Ellipses use the same colors
     for group in groups_order:
@@ -192,11 +219,12 @@ def run_pca(file_path, group_file, save_dir):
     plt.ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}% Variance)", labelpad = 12)
     plt.title("PCA Scores Plot", fontsize=14)
     ax.legend(
-        bbox_to_anchor=(1.05, 1),
+        bbox_to_anchor=(1.02, 1),
         loc="upper left",
-        borderaxespad=0,
-        fontsize=14,
-        title_fontsize=14
+        borderaxespad=0.0,
+        fontsize=12,
+        title_fontsize=12,
+        frameon=False
     )
     # ax.grid(True, linestyle="--", linewidth=0.3, alpha=0.8)
     ax.set_aspect("equal", adjustable="datalim")
@@ -232,15 +260,28 @@ def run_pca(file_path, group_file, save_dir):
     ax.set_xlim(xlims[0] - xpad, xlims[1] + xpad)
     ax.set_ylim(ylims[0] - ypad, ylims[1] + ypad)
 
+    ax.set_aspect("equal", adjustable="datalim")
+
+    # Add full rectangular border
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.0)
+        spine.set_color("black")
+
     # Save figure
-    plt.tight_layout()
-    plt.savefig(save_dir / "PCA_2D.png", dpi=300, bbox_inches="tight")
+    # plt.tight_layout()
+    fig.subplots_adjust(right=0.80)  # ensures room in interactive view
+    fig.savefig(save_dir / "PCA_2D.png", dpi=100, bbox_inches="tight", pad_inches=0.3, facecolor="white")
     plt.close()
 
     # === PCA with sample labels ===
     plt.figure(figsize=(9, 6))
-    groups_order = list(pca_df["Group"].astype(str).unique())
-    color_map = make_distinct_palette(groups_order)
+    existing = list(pca_df["Group"].astype(str).unique())
+    if group_order:
+        groups_order = [g for g in group_order if g in existing] + [g for g in existing if g not in group_order]
+    else:
+        groups_order = existing
+    color_map = make_distinct_palette(groups_order, group_colors=group_colors)
 
     ax = sns.scatterplot(
         data=pca_df,
@@ -283,12 +324,14 @@ def run_pca(file_path, group_file, save_dir):
     plt.ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}% Variance)", labelpad = 12)
     plt.title("PCA Scores Plot (With Sample Labels)", fontsize=14)
     ax.legend(
-        bbox_to_anchor=(1.05, 1),
+        bbox_to_anchor=(1.02, 1),
         loc="upper left",
-        borderaxespad=0,
-        fontsize=14,
-        title_fontsize=14
+        borderaxespad=0.0,
+        fontsize=12,
+        title_fontsize=12,
+        frameon=False
     )
+    # ax.grid(True, linestyle="--", linewidth=0.3, alpha=0.8)
     ax.set_aspect("equal", adjustable="datalim")
 
     # Bottom stats line (same format)
@@ -320,11 +363,22 @@ def run_pca(file_path, group_file, save_dir):
     ax.set_xlim(xlims[0] - xpad, xlims[1] + xpad)
     ax.set_ylim(ylims[0] - ypad, ylims[1] + ypad)
 
-    plt.tight_layout()
-    plt.savefig(save_dir / "PCA_2D_with_labels.png", dpi=300, bbox_inches="tight")
+    ax.set_aspect("equal", adjustable="datalim")
+
+    # Add full rectangular border
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.0)
+        spine.set_color("black")
+        
+    # plt.tight_layout()
+    plt.savefig(save_dir / "PCA_2D_with_labels.png", dpi=100, bbox_inches="tight", pad_inches=0.3, facecolor="white")
     plt.close()
 
-        # === Loadings ===
+    # ==============================================================================
+    #  LOADINGS
+    # ==============================================================================
+
     loadings = pd.DataFrame(
         pca.components_.T,
         index=X.columns,                # already UniqueIDs from load_dataset()
@@ -376,18 +430,134 @@ def run_pca(file_path, group_file, save_dir):
     ax.set_xlim(xlims[0] - xpad, xlims[1] + xpad)
     ax.set_ylim(ylims[0] - ypad, ylims[1] + ypad)
 
-    plt.tight_layout()
-    plt.savefig(save_dir / "PCA_Loadings.png", dpi=300, bbox_inches="tight")
+    # Add full rectangular border
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.0)
+        spine.set_color("black")
+
+    # plt.tight_layout()
+    plt.savefig(save_dir / "PCA_Loadings.png", dpi=100, bbox_inches="tight", pad_inches=0.2)
     plt.close()
 
 
     # === Detect outliers ===
     outliers = detect_outliers_mahalanobis(scores, X.index, save_dir)
     if np.any(outliers):
-        print(f"[PCA] Outliers detected: {list(X.index[outliers])}", flush = True)
-        with open(save_dir / "outliers.txt", "w") as f:
-            f.write("\n".join(X.index[outliers]))
-    else:
-        print("[PCA] No significant outliers detected.", flush = True)
+        found = list(X.index[outliers])
+        print(f"[PCA] Outliers detected: {found}", flush=True)
+        with open(save_dir / "outliers.txt", "w", encoding="utf-8") as f:
+            f.write("\n".join(found))
 
-    print(f"[PCA] Completed. Results saved to: {save_dir}\n", flush = True)
+        # ---------- Re-run PCA without outliers ----------
+        X_no = X.loc[~outliers].copy()
+        y_no = y.loc[~outliers].reset_index(drop=True)
+
+        if len(X_no) >= 3 and y_no.nunique() >= 1:
+            subdir = prepare_output_dir(Path(save_dir) / "Without_outliers")
+            X_scaled_no = StandardScaler().fit_transform(X_no)
+            dist_no = squareform(pdist(X_scaled_no, metric="euclidean"))
+
+            pca_no = PCA(n_components=2)
+            scores_no = pca_no.fit_transform(X_scaled_no)
+
+            # stats for the filtered set
+            F_no, p_no = permanova(dist_no, y_no, permutations=1000)
+            sil_no = silhouette_score(scores_no, y_no, metric="euclidean")
+
+            pca_df_no = pd.DataFrame(scores_no, columns=["PC1", "PC2"], index=X_no.index)
+            pca_df_no["Group"] = y_no.values
+            pca_df_no.to_csv(subdir / "PCA_scores.csv", index=True, encoding="utf-8-sig")
+
+            # ---- plot helper to avoid duplication ----
+            def _plot_scores(df, pca_model, save_path_png, save_path_labeled_png, stats_tuple):
+                Fv, pv, silv = stats_tuple
+                existing = list(df["Group"].astype(str).unique())
+                if group_order:
+                    order = [g for g in group_order if g in existing] + [g for g in existing if g not in group_order]
+                else:
+                    order = existing
+                cmap = make_distinct_palette(order, group_colors=group_colors)
+
+                # plain
+                fig, ax = plt.subplots(figsize=(9, 6))
+                sns.scatterplot(
+                    data=df, x="PC1", y="PC2", hue="Group",
+                    hue_order=order, palette=cmap, s=90, alpha=0.95, edgecolor="black", ax=ax
+                )
+                for g in order:
+                    dg = df.loc[df["Group"] == g, ["PC1", "PC2"]]
+                    if len(dg) >= 3:
+                        cov = np.cov(dg.T); ctr = dg.mean().values; col = cmap.get(g, (0.5,0.5,0.5))
+                        try:
+                            ell = get_cov_ellipse(cov, ctr, nstd=1.96, facecolor=col, alpha=0.18, edgecolor=col, linewidth=1)
+                            ax.add_patch(ell)
+                        except Exception:
+                            pass
+                ax.set_xlabel(f"PC1 ({pca_model.explained_variance_ratio_[0]*100:.1f}% Variance)", labelpad=12)
+                ax.set_ylabel(f"PC2 ({pca_model.explained_variance_ratio_[1]*100:.1f}% Variance)", labelpad=12)
+                ax.set_title("PCA Scores Plot (No Outliers)", fontsize=14)
+                ax.legend(bbox_to_anchor=(1.02,1), loc="upper left", borderaxespad=0.0, fontsize=12, title_fontsize=12, frameon=False)
+                ax.set_aspect("equal", adjustable="datalim")
+                p_txt = "< 0.001" if pv < 0.001 else f"= {pv:.3g}"
+                ax.text(0.5, -0.18, f"PERMANOVA (1000 perm.): F = {Fv:.2f}, p {p_txt} | SILHOUETTE SCORE = {silv:.2f}",
+                        ha="center", va="top", transform=ax.transAxes, fontsize=12, color="dimgray")
+                # pads and border
+                xlims = ax.get_xlim(); ylims = ax.get_ylim()
+                xpad = (xlims[1]-xlims[0]) * 0.1; ypad = (ylims[1]-ylims[0]) * 0.1
+                ax.set_xlim(xlims[0]-xpad, xlims[1]+xpad); ax.set_ylim(ylims[0]-ypad, ylims[1]+ypad)
+                for s in ax.spines.values():
+                    s.set_visible(True); s.set_linewidth(1.0); s.set_color("black")
+                fig.savefig(save_path_png, dpi=100, bbox_inches="tight", pad_inches=0.3, facecolor="white")
+                plt.close(fig)
+
+                # with labels
+                fig, ax = plt.subplots(figsize=(9, 6))
+                sns.scatterplot(
+                    data=df, x="PC1", y="PC2", hue="Group",
+                    hue_order=order, palette=cmap, s=90, alpha=0.95, edgecolor="black", ax=ax
+                )
+                for g in order:
+                    dg = df.loc[df["Group"] == g, ["PC1", "PC2"]]
+                    if len(dg) >= 3:
+                        cov = np.cov(dg.T); ctr = dg.mean().values; col = cmap.get(g, (0.5,0.5,0.5))
+                        try:
+                            ell = get_cov_ellipse(cov, ctr, nstd=1.96, facecolor=col, alpha=0.18, edgecolor=col, linewidth=1)
+                            ax.add_patch(ell)
+                        except Exception:
+                            pass
+                for sname, row in df.iterrows():
+                    ax.text(row["PC1"]+0.4, row["PC2"]+0.4, str(sname), fontsize=7, alpha=0.8, color="black", ha="left", va="bottom")
+                ax.set_xlabel(f"PC1 ({pca_model.explained_variance_ratio_[0]*100:.1f}% Variance)", labelpad=12)
+                ax.set_ylabel(f"PC2 ({pca_model.explained_variance_ratio_[1]*100:.1f}% Variance)", labelpad=12)
+                ax.set_title("PCA Scores Plot (No Outliers, With Sample Labels)", fontsize=14)
+                ax.legend(bbox_to_anchor=(1.02,1), loc="upper left", borderaxespad=0.0, fontsize=12, title_fontsize=12, frameon=False)
+                ax.set_aspect("equal", adjustable="datalim")
+                ax.text(0.5, -0.18, f"PERMANOVA (1000 perm.): F = {Fv:.2f}, p {p_txt} | SILHOUETTE SCORE = {silv:.2f}",
+                        ha="center", va="top", transform=ax.transAxes, fontsize=12, color="dimgray")
+                xlims = ax.get_xlim(); ylims = ax.get_ylim()
+                xpad = (xlims[1]-xlims[0]) * 0.1; ypad = (ylims[1]-ylims[0]) * 0.1
+                ax.set_xlim(xlims[0]-xpad, xlims[1]+xpad); ax.set_ylim(ylims[0]-ypad, ylims[1]+ypad)
+                for s in ax.spines.values():
+                    s.set_visible(True); s.set_linewidth(1.0); s.set_color("black")
+                fig.savefig(save_path_labeled_png, dpi=100, bbox_inches="tight", pad_inches=0.3, facecolor="white")
+                plt.close(fig)
+
+            _plot_scores(
+                pca_df_no, pca_no,
+                subdir / "PCA_2D.png",
+                subdir / "PCA_2D_with_labels.png",
+                (F_no, p_no, sil_no)
+            )
+
+            # Loadings (optional for filtered set; keep same format)
+            load_no = pd.DataFrame(pca_no.components_.T, index=X_no.columns, columns=["PC1", "PC2"])
+            load_no.index.name = "UniqueID"
+            load_no.reset_index().to_csv(subdir / "PCA_loadings.csv", index=False, encoding="utf-8-sig")
+        else:
+            print("[PCA] Outliers found but not enough samples remain to re-run PCA.", flush=True)
+    else:
+        print("[PCA] No significant outliers detected.", flush=True)
+
+    print(f"[PCA] Completed. Results saved to: {save_dir}\n", flush=True)
+

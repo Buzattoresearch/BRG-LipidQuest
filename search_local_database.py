@@ -1,3 +1,19 @@
+'''
+This step performs a local exact mass search to annotate features that MetaboScape did not annotate. 
+It loads the sanitized feature table and selects only rows with missing or blank annotations. 
+For each candidate feature, it reads the measured m/z and polarity and then tests a predefined list of common adduct models for that polarity. 
+For every adduct, it converts all neutral masses in the local reference library to theoretical m/z values and identifies matches that satisfy both an absolute m/z window and a ppm tolerance. 
+When a match is found, the software creates a new row that preserves the original feature data and adds the matched neutral mass, matched adduct, and library annotation. 
+It also updates the primary “Neutral mass” and “Adducts” fields, assigns the annotation source, and labels the match as low-confidence unless it is an internal standard, target list match, or MS/MS match.
+
+For each matched annotation, the software re-derives headgroup and lipid class using the same headgroup-to-class mapping rules used during loading, 
+with a few explicit fallbacks for known patterns. 
+It then re-parses fatty acyl composition from the new annotation and recomputes derived descriptors, including total carbons, double bonds, chain type, PUFA status, modification counts, and oxidation flags. 
+If multiple database entries match the same feature under different adduct assumptions, it outputs multiple matched rows so that ambiguity is retained rather than forced into a single choice (for now). 
+Finally, it appends all matched rows back onto the original dataset, standardizes column order, and writes a raw MS-search output table to the debug folder for downstream filtering and review.
+'''
+
+
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -28,7 +44,7 @@ ADDUCT_MODELS = {
         "[2M+NH4]+":     (2, +MASS_NH4,           +1),
         "[3M+NH4]+":     (3, +MASS_NH4,           +1),
         "[2M+Na]+":      (2, +MASS_NA,            +1),
-        "[3M+Na]+":      (2, +MASS_NA,            +1),
+        "[3M+Na]+":      (3, +MASS_NA,            +1),
         "[2M+2Na-H]+":   (2, +MASS_2NAH,          +1),  # uncommon but included
         "[M+2H]2+":      (1, +2*MASS_H,           +2),  # uncommon but included
         "[M+2NH4]2+":    (1, +2*MASS_NH4,         +2),
@@ -38,8 +54,8 @@ ADDUCT_MODELS = {
         "[M+HCOO]-":     (1, +MASS_FORMATE,       -1),
         "[2M-H]-":       (2, -MASS_H,             -1),
         "[2M+HCOO]-":    (2, +MASS_FORMATE,       -1),
-        "[3M-H]-":       (2, -MASS_H,             -1),
-        "[3M+HCOO]-":    (2, +MASS_FORMATE,       -1),
+        "[3M-H]-":       (3, -MASS_H,             -1),
+        "[3M+HCOO]-":    (3, +MASS_FORMATE,       -1),
         "[M-2H]2-":      (1, -2*MASS_H,           -2),
         "[M+2HCOO]2-":   (1, +2*MASS_FORMATE,     -2),
     }
@@ -99,7 +115,7 @@ def ppm_difference(ref_mass, test_masses):
     return np.abs((test_masses - ref_mass) / ref_mass) * 1e6
 
 
-def search_local_database(file_path, output_folder, mz_tolerance_ppm=3,
+def search_local_database(file_path, output_folder, pol_tag, mz_tolerance_ppm=3,
                           mz_tolerance_Da=0.003, stop_flag=None):
     """
     Local DB search:
@@ -110,7 +126,7 @@ def search_local_database(file_path, output_folder, mz_tolerance_ppm=3,
     file_path = Path(file_path)
     df_input = pd.read_csv(file_path, low_memory=False)
 
-    print('\nRunning MS search against local database...\n')
+    print('\nRunning MS search against local database...\n', flush = True)
 
     # Pick annotation column
     annotation_col = None
@@ -131,7 +147,7 @@ def search_local_database(file_path, output_folder, mz_tolerance_ppm=3,
     if not db_path.exists():
         raise FileNotFoundError(f"Local database not found at {db_path}")
 
-    df_db = pd.read_excel(db_path, low_memory=False)
+    df_db = pd.read_excel(db_path)
     df_db.columns = df_db.columns.str.strip()
 
     if "Neutral mass" not in df_db.columns:
@@ -153,12 +169,24 @@ def search_local_database(file_path, output_folder, mz_tolerance_ppm=3,
             print("Search interrupted by user.", flush=True)
             break
         mz = row.get("m/z") or row.get("m/z meas.") or None
-        polarity = row.get("Polarity", "")
-        if pd.isna(mz) or polarity not in ADDUCT_MODELS:
+        pol_raw = row.get("Polarity", "")
+
+        if pd.isna(mz):
             continue
+
+        pol_str = str(pol_raw).strip().lower()
+        if pol_str.startswith("pos"):
+            polarity_key = "Pos"
+        elif pol_str.startswith("neg"):
+            polarity_key = "Neg"
+        else:
+            # Unknown or missing polarity → cannot use adduct models
+            continue
+
         mz = float(mz)
 
-        for adduct_name, model in ADDUCT_MODELS[polarity].items():
+        for adduct_name, model in ADDUCT_MODELS[polarity_key].items():
+
             if stop_flag and stop_flag():
                 break
 
@@ -184,11 +212,14 @@ def search_local_database(file_path, output_folder, mz_tolerance_ppm=3,
                 # Fill annotation fields
                 new_row["Matched Mass (MS matches)"] = match["Neutral mass"]
                 new_row["Matched adduct (MS matches)"] = adduct_name
+                # --- Update the primary neutral mass and adduct fields ---
+                new_row["Neutral mass"] = match["Neutral mass"]
+                new_row["Adducts"] = adduct_name
                 new_row["LIPIDMAPS ID (MS matches)"] = match.get("LIPIDMAPS ID", "")
                 new_row["Annotation"] = str(match.get("Annotation", ""))
                 new_row["Annotation Source"] = "Lipid Maps"
 
-                if new_row.get("Annotation Type") not in ("IS", "MS/MS match"):
+                if new_row.get("Annotation Type") not in ("IS", "MS/MS match", "Target list"):
                     new_row["Annotation Type"] = "MS match"
                     new_row["Annotation tier"] = "Low confidence"
 
@@ -198,18 +229,39 @@ def search_local_database(file_path, output_folder, mz_tolerance_ppm=3,
                 new_row["Δm/z (mDa)"] = delta_da * 1000.0
                 new_row["Δm/z (ppm)"] = (delta_da / theo_mz) * 1e6 if theo_mz else ""
 
-                # everything else unchanged …
-                headgroup = str(new_row["Annotation"]).split(" ")[0]
+                # define headgroup
+                annotation = str(new_row["Annotation"]).strip()
+                first_token = annotation.split(" ")[0]
+
+                if " O-" in annotation:
+                    headgroup = first_token + " O-"
+                else:
+                    headgroup = first_token
                 new_row["Headgroup"] = headgroup
 
-                if new_row.get("Annotation Type") not in ("IS", "MS/MS match"):
+                if new_row.get("Annotation Type") not in ("IS", "MS/MS match", "Target list"):
                     headgroup = str(new_row.get("Headgroup", "")).strip()
+
                     if headgroup in headgroup_map:
                         new_row["Lipid Class"] = headgroup_map[headgroup]
+                    elif headgroup == "":
+                        new_row["Lipid Class"] = ""
+
+                    elif headgroup.upper() == "NA":
+                        new_row["Lipid Class"] = "NA"
+
+                    elif "GlcAbeta-Cer" in str(new_row["Annotation"]):
+                        new_row["Lipid Class"] = "HexCer"
+                        
+                    elif "Cer(" in str(new_row["Annotation"]):
+                        new_row["Lipid Class"] = "Cer"
+                        
+                    elif "sterol" in str(new_row["Annotation"]):
+                        new_row["Lipid Class"] = "ST"
+                        
                     else:
                         new_row["Lipid Class"] = "Other"
-                    if headgroup == "":
-                        new_row["Lipid Class"] = ""
+
 
                 fa_info = parse_fatty_acyls(new_row["Annotation"])
                 for j in range(4):
@@ -234,8 +286,12 @@ def search_local_database(file_path, output_folder, mz_tolerance_ppm=3,
                 mods = extract_modifications(new_row["Annotation"])
                 new_row["Modifications"] = mods
                 new_row["# of modifications"] = count_modifications(mods)
-                ratio = (total_c / total_dbe) if total_c and total_dbe not in ("", 0) else ""
+                if total_c not in ("", 0) and total_dbe not in ("", 0):
+                    ratio = total_c / total_dbe
+                else:
+                    ratio = ""
                 new_row["Carbons / double bond equivalent ratio"] = ratio
+
                 new_row["Oxidized?"] = is_oxidized(mods, new_row.get("Lipid Class", ""))
 
                 results.append(new_row)
@@ -250,7 +306,12 @@ def search_local_database(file_path, output_folder, mz_tolerance_ppm=3,
         df_results = pd.DataFrame(results)
         df_results.columns = df_results.columns.str.strip()
         # align to input schema
-        df_results = df_results.reindex(columns=df_input.columns, fill_value="")
+        # Keep all input columns + any new annotation columns
+        all_cols = list(df_input.columns)
+        for c in df_results.columns:
+            if c not in all_cols:
+                all_cols.append(c)
+        df_results = df_results.reindex(columns=all_cols, fill_value="")
         df_output = pd.concat([df_input, df_results], ignore_index=True)
     else:
         df_output = df_input.copy()
@@ -298,11 +359,12 @@ def search_local_database(file_path, output_folder, mz_tolerance_ppm=3,
     debug_folder = output_folder / "debug"
     debug_folder.mkdir(parents=True, exist_ok=True)
 
-    out_file = debug_folder / "MS_search_results_RAW.csv"
+    out_file = debug_folder / f"{pol_tag}MS_search_results_RAW.csv"
     df_output.to_csv(out_file, index=False, encoding="utf-8-sig")
-    
-    print(f'\n ----- MS search finished; moving to filtering. ----- \n', flush = True)
+
+    print(f"\n ----- MS search finished for mode '{pol_tag}'; moving to filtering. ----- \n", flush=True)
 
     return out_file, df_output
+
 
 

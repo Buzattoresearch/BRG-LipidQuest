@@ -17,6 +17,13 @@ warnings.filterwarnings(
     category=FutureWarning
 )
 
+'''
+Median normalization assumes every sample should have roughly the same total signal (or at least the same median intensity across features).
+That assumption holds only if:
+    all samples are comparable in composition (e.g., serum replicates), and
+    differences are mostly due to instrument drift.
+If the sample set contains blanks, IS solutions, or different types of samples, median normalization will flatten true biological and compositional differences.
+'''
 
 def median_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_folder="results", min_n_per_class: int = 5):
     """
@@ -24,7 +31,7 @@ def median_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_
       A) Global per-sample median (annotated + unknowns)
       B) Within-class median applied to the globally normalized annotated table
     """
-    print("\nStarting HYBRID median-based normalization...\n", flush=True)
+    print("\nStarting median-based normalization...\n", flush=True)
     annotated_csv = Path(annotated_csv)
     unknowns_csv = Path(unknowns_csv)
     sample_groups_csv = Path(sample_groups_csv)
@@ -45,9 +52,28 @@ def median_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_
         print(f"[WARNING] Unknowns file not found: {unknowns_csv}", flush=True)
 
     # ---------- Identify sample columns FIRST ----------
-    sample_cols = [c for c in df_ann.columns if c.startswith("[POS") or c.startswith("[NEG")]
+    sample_cols = [c for c in df_ann.columns if c.startswith("P_") or c.startswith("N_")]
     if not sample_cols:
         raise ValueError("No sample columns found in annotated file.")
+
+    # ---------- Determine polarity tag for filenames ----------
+    pol_tag = ""
+    if "Polarity" in df_ann.columns:
+        pol_series = df_ann["Polarity"].dropna().astype(str).str.lower()
+        if not pol_series.empty:
+            first_pol = pol_series.iloc[0]
+            if "pos" in first_pol:
+                pol_tag = "Pos_"
+            elif "neg" in first_pol:
+                pol_tag = "Neg_"
+    if not pol_tag:
+        # Fallback: infer from sample column prefixes
+        has_pos = any(c.startswith("P_") for c in sample_cols)
+        has_neg = any(c.startswith("N_") for c in sample_cols)
+        if has_pos and not has_neg:
+            pol_tag = "Pos_"
+        elif has_neg and not has_pos:
+            pol_tag = "Neg_"
 
     # ---------- Coerce numeric (zeros -> NaN for medians/ratios) ----------
     def _coerce_numeric(df, cols):
@@ -95,7 +121,7 @@ def median_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_
 
     # ---------- B) Within-class on top of global (annotated only, gated by min_n_per_class) ----------
     print(f"[STEP B] Within-class median normalization on globally normalized annotated "
-      f"(only for classes with n_features >= {min_n_per_class})...", flush=True)
+          f"(only for classes with n_features >= {min_n_per_class})...", flush=True)
 
     if "Lipid Class" not in norm_ann_global.columns:
         raise ValueError("Missing 'Lipid Class' column in annotated dataset.")
@@ -137,7 +163,7 @@ def median_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_
         .assign(eligible=lambda s: s.index.to_series().isin(eligible_classes))
     )
     (output_folder / "debug").mkdir(parents=True, exist_ok=True)
-    summary_path = output_folder / "debug" / "within_class_normalization_summary.csv"
+    summary_path = output_folder / "debug" / f"{pol_tag}within_class_normalization_summary.csv"
     summary.to_csv(summary_path, index=True, encoding="utf-8-sig")
     print(f"[INFO] Within-class normalization summary → {summary_path}", flush=True)
 
@@ -172,8 +198,8 @@ def median_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_
         pass
 
     # ---------- Reorder columns & save ----------
-    out_ann_global = output_folder / "debug" / "7a-Final_annotated_global_median_normalized.csv"
-    out_ann_class  = output_folder / "debug" / "7-Final_annotated_median_normalized.csv"
+    out_ann_global = output_folder / "debug" / f"{pol_tag}6a-Final_annotated_global_median_normalized.csv"
+    out_ann_class  = output_folder / "debug" / f"{pol_tag}6-Final_annotated_median_normalized.csv"
     norm_ann_global = _reorder(norm_ann_global)
     norm_ann_class  = _reorder(norm_ann_class)
     norm_ann_global.to_csv(out_ann_global, index=False, encoding="utf-8-sig")
@@ -182,7 +208,7 @@ def median_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_
     print(f"[INFO] Saved: {out_ann_class}",  flush=True)
 
     if norm_unk_global is not None:
-        out_unk_global = output_folder / "debug" / "8-Final_unknowns_median_normalized.csv"
+        out_unk_global = output_folder / "debug" / f"{pol_tag}7-Final_unknowns_median_normalized.csv"
         # reorder unknowns too (core cols subset + sample cols)
         cols_u = [c for c in core_cols if c in norm_unk_global.columns] + [c for c in sample_cols if c in norm_unk_global.columns]
         norm_unk_global[cols_u].to_csv(out_unk_global, index=False, encoding="utf-8-sig")
@@ -225,7 +251,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Within-class and global median normalization (separate outputs).")
     parser.add_argument("--annotated", required=True, help="Path to Final_annotated_results_normalized.csv")
-    parser.add_argument("--unknowns", required=True, help="Path to Final_unknowns.csv")
+    parser.add_argument("--unknowns", required=True, help="Path to Final_Unknowns.csv")
     parser.add_argument("--groups", required=True, help="Path to sample_groups.csv")
     parser.add_argument("--out", default="results", help="Output folder")
     args = parser.parse_args()
