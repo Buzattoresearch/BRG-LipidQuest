@@ -449,7 +449,7 @@ def flag_and_plot_ccs_outliers_by_class(
     min_class_size=10,
     min_points_for_fit=6,
     plot_min_points=1,
-    mad_z_thresh=10,
+    mad_z_thresh=15,
     max_labels_per_class=20,
     skip_ccs_classes=None,
     use_headgroup_for_classes=None,
@@ -813,7 +813,7 @@ def flag_ccs_outliers_by_class(
     annotation_col: str = "Annotation",
     id_col: str = "UniqueID",
     min_class_size: int = 12,
-    mad_k: float = 10.0,                         # stricter: 5–6; looser: 7–8
+    mad_k: float = 15.0,                         # stricter: 5–6; looser: 7–8
     min_points_for_fit: int = 6,                # minimum valid points in class after NaN filtering
     output_folder: Optional[Path] = None,
     pol_tag: str = "",
@@ -1208,7 +1208,7 @@ def run_pipeline(input_csv, output_folder, min_score=70, scoring_module="scoring
                 annotation_col="Annotation",
                 uid_col="UniqueID",
                 min_class_size=12,
-                mad_z_thresh=10,
+                mad_z_thresh=15,
                 max_labels_per_class=20,
                 use_headgroup_for_classes=["HexCer"],
                 skip_ccs_classes=[],
