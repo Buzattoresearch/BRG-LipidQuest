@@ -31,9 +31,9 @@ rcParams["axes.titleweight"] = "bold"      # bold titles
 # ----------------------------------------------------------
 
 preferred_order = [
-            "CAR", "CoA", "FA", "FAG", "FAL", "FOH", "HC", "NA", "NAE", "NAT", "WE", "FAHFA",
-            "MG", "DG", "TG", "DGDG", "DGMG", "MGDG", "MGMG", "DGTA", "DGTS", "MGTS", "GlcADG", "DGCC", "SQDG", "SQMG",
-            "LPA", "PA", "PPA", "LPG", "PG", "CL", "BMP", "LPC", "PC", "PnC", "LPE", "PE", "PnE", "LPS", "PS", "LPI", "PI", "PIM", "PIP", "CDP-DG", "Glc-GP", "GP",
+            "CAR", "CoA", "FA", "FAG", "FAL", "FOH", "HC", "NAx", "NAE", "NAT", "WE", "FAHFA",
+            "MG", "DG", "TG", "Hex2DG", "Hex2MG", "HexDG", "HexMG", "DGTA", "DGTS", "MGTS", "GlcADG", "DGCC", "SQDG", "SQMG",
+            "LPA", "PA", "PPA", "LPG", "PG", "CL", "MLCL", "DLCL", "BMP", "LPC", "PC", "PnC", "LPE", "PE", "PEth", "PnE", "LPS", "PS", "LPI", "PI", "PIM", "PIP", "CDP-DG", "Glc-GP", "GP",
             "Cer", "ACer", "CerP", "GlcCer", "HexCer", "MIPC", "M(IP)2C", "PE-Cer", "CerPE", "PI-Cer", "CerPI", "SCer", "SHexCer", "LSM", "SM", "SPB", "HexSPB", "SPBP", "SulfateHexSPB",
             "CE", "ST", "PK", "PR", "SL", "Other"
         ]

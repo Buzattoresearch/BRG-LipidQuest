@@ -17,6 +17,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
+from Stats.figure_style import build_group_palette as _shared_build_group_palette, get_figure_style
 from Stats.utils import load_dataset, prepare_output_dir
 from Stats.utils import _CLASS_ORDER, _CLASS_ORDER_BACTERIA, _CLASS_ORDER_MAMMALIAN, _CLASS_GROUP_MAP
 
@@ -51,23 +52,7 @@ def species_counts_from_collapsed(df: pd.DataFrame, unknown_policy: str = "appen
 # =========================================
 
 def _build_palette(labels: List[str], group_colors: Optional[dict]) -> dict:
-    pal = {}
-    if isinstance(group_colors, dict):
-        for k, v in group_colors.items():
-            if isinstance(v, str) and re.fullmatch(r"#[0-9A-Fa-f]{6}", v):
-                pal[str(k)] = v.upper()
-
-    wheel = []
-    for cmap in ("tab20","tab20b","tab20c","Set3","Paired","Accent"):
-        wheel += [matplotlib.colors.to_hex(c) for c in plt.get_cmap(cmap).colors]
-    seen = set()
-    wheel = [c.upper() for c in wheel if not (c.upper() in seen or seen.add(c.upper()))]
-
-    i = 0
-    for g in labels:
-        if g not in pal:
-            pal[g] = wheel[i % len(wheel)]
-            i += 1
+    _, pal = _shared_build_group_palette(labels, group_colors=group_colors, group_order=labels)
     return pal
 
 def _build_class_colors(classes: List[str]) -> dict:
@@ -145,12 +130,58 @@ def totals_per_class_from_X(X: pd.DataFrame, feature_meta: pd.DataFrame) -> pd.D
 # Plotting helpers (legends not clipped)
 # =========================================
 
-def _save_with_legend(fig: plt.Figure, path_png: str, path_svg: Optional[str], legends: List[matplotlib.legend.Legend]):
+def _save_with_legend(fig: plt.Figure, path_png: str, path_svg: Optional[str], legends: List[matplotlib.legend.Legend], dpi: int = 100):
     extra = [leg for leg in legends if leg is not None]
-    fig.savefig(path_png, dpi=100, bbox_inches="tight", bbox_extra_artists=extra)
+    fig.savefig(path_png, dpi=dpi, bbox_inches="tight", bbox_extra_artists=extra)
     if path_svg:
-        fig.savefig(path_svg, dpi=100, bbox_inches="tight", bbox_extra_artists=extra)
-    plt.close(fig)
+        fig.savefig(path_svg, bbox_inches="tight", bbox_extra_artists=extra)
+
+
+def _add_relative_background_ribbons(
+    ax: plt.Axes,
+    rel_df: pd.DataFrame,
+    x: np.ndarray,
+    class_colors: dict,
+    alpha: float = 0.14,
+) -> None:
+    """Draw translucent stacked ribbons behind relative-composition bars."""
+    bottom = np.zeros(len(rel_df.index), dtype=float)
+    for lipid_class in rel_df.columns:
+        vals = pd.to_numeric(rel_df[lipid_class], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+        top = bottom + vals
+        ax.fill_between(
+            x,
+            bottom,
+            top,
+            color=class_colors[lipid_class],
+            alpha=alpha,
+            linewidth=0,
+            zorder=0,
+        )
+        bottom = top
+
+
+def _darken_color(color: str, factor: float = 0.65) -> tuple[float, float, float]:
+    r, g, b = matplotlib.colors.to_rgb(color)
+    return (r * factor, g * factor, b * factor)
+
+
+def _set_tighter_bar_limits(ax: plt.Axes, x: np.ndarray, width: float) -> None:
+    if len(x) == 0:
+        return
+    ax.set_xlim(x[0] - width * 0.55, x[-1] + width * 0.52)
+
+
+def _is_semiquant_dataset(dataset_label: Optional[str], file_path: Optional[str] = None) -> bool:
+    dataset_text = str(dataset_label or "").strip().lower()
+    file_text = str(file_path or "").strip().lower()
+    return "annotated semi-quant" in dataset_text or "semi_quant" in file_text or "semi-quant" in file_text
+
+
+def _absolute_intensity_label(dataset_label: Optional[str], file_path: Optional[str] = None) -> str:
+    if _is_semiquant_dataset(dataset_label, file_path):
+        return "Semi-quantitative class abundance\n(normalized intensity x IS concentration)"
+    return "Total intensity (median of samples)"
 
 # =========================================
 # Public API
@@ -162,7 +193,8 @@ def run_from_stats(
     save_dir: str,
     group_order: Optional[List[str]] = None,
     group_colors: Optional[dict] = None,
-    sample_type: Optional[str] = None,   # ← add this
+    sample_type: Optional[str] = None,
+    dataset_label: Optional[str] = None,
 ) -> Dict[str, str]:
 
     """
@@ -203,24 +235,28 @@ def run_from_stats(
     norm_sample = norm_sample.fillna(0)
     norm_sample_csv = os.path.join(out_dir, "per_sample_class_percent.csv")
     norm_sample.to_csv(norm_sample_csv)
+    absolute_label = _absolute_intensity_label(dataset_label, file_path)
 
     fig, ax = plt.subplots(figsize=(16, 8))
     bottom = np.zeros(len(norm_sample.index))
     x = np.arange(len(norm_sample.index))
     ax.set_xticks(x)
     ax.set_xticklabels(norm_sample.index.astype(str), rotation=90, ha="center", fontsize=11)
+    _add_relative_background_ribbons(ax, norm_sample, x, pal_sub, alpha=0.18)
 
+    width = 0.64
     legend_handles = []
     for sc in norm_sample.columns:
         vals = norm_sample[sc].values
-        bars = ax.bar(x, vals, bottom=bottom, color=pal_sub[sc], label=sc, width=0.8)
+        ax.bar(x, vals, bottom=bottom, color=pal_sub[sc], label=sc, width=width)
         bottom += vals
         legend_handles.append(Patch(facecolor=pal_sub[sc], edgecolor="none", label=sc))
+    _set_tighter_bar_limits(ax, x, width)
 
-    ax.set_title("Relative lipid class composition per sample (% total intensity)", fontsize=18, pad=12)
-    ax.set_ylabel("Percentage of total intensity (%)", fontsize=14)
-    ax.set_xlabel("Samples", fontsize=14)
-    ax.tick_params(axis="y", labelsize=12)
+    ax.set_title("Relative lipid class composition per sample (% total intensity)", fontsize=20, pad=12)
+    ax.set_ylabel("Percentage of total intensity (%)", fontsize=16)
+    ax.set_xlabel("Samples", fontsize=16)
+    ax.tick_params(axis="y", labelsize=16)
     ax.set_ylim(0, 100)
 
     ax.spines["top"].set_visible(False)
@@ -228,9 +264,8 @@ def run_from_stats(
 
     leg_sub = ax.legend(
         handles=legend_handles,
-        title="Class",
         bbox_to_anchor=(1.01, 1), loc="upper left",
-        frameon=False, fontsize=11, title_fontsize=12, ncols=1
+        frameon=False, fontsize=16, title_fontsize=12, ncols=1
     )
     fig.subplots_adjust(right=0.82)
 
@@ -246,6 +281,18 @@ def run_from_stats(
     med = med.reindex(index=_order_labels(list(med.index.astype(str)), group_order))  # reorder groups if requested
     med_norm = med.div(med.sum(axis=1).replace(0, np.nan), axis=0) * 100.0
     med_norm = med_norm.fillna(0)
+    norm_with_group = norm_sample.copy()
+    norm_with_group["Group"] = y.values
+    rel_err = (
+        norm_with_group.groupby("Group").std(numeric_only=True)
+        .reindex(index=med_norm.index, columns=med_norm.columns)
+        .fillna(0.0)
+    )
+    abs_err = (
+        df_with_group.groupby("Group").std(numeric_only=True)
+        .reindex(index=med.index, columns=med.columns)
+        .fillna(0.0)
+    )
 
     med_norm_csv = os.path.join(out_dir, "per_group_median_class_percent.csv")
     med_norm.to_csv(med_norm_csv)
@@ -253,30 +300,42 @@ def run_from_stats(
     fig, ax = plt.subplots(figsize=(12, 7))
     x = np.arange(len(med_norm.index))
     ax.set_xticks(x)
-    ax.set_xticklabels([str(g) for g in med_norm.index], rotation=45, ha="right", fontsize=13)
+    ax.set_xticklabels([str(g) for g in med_norm.index], rotation=45, ha="right", fontsize=18)
+    _add_relative_background_ribbons(ax, med_norm, x, pal_sub, alpha=0.18)
 
-    width = 0.8
+    width = 0.6
     bottom = np.zeros(len(med_norm.index))
     legend_handles = []
     for sc in med_norm.columns:
         vals = med_norm[sc].values
-        ax.bar(x, vals, width=width, bottom=bottom, color=pal_sub[sc], label=sc)
+        errs = rel_err[sc].to_numpy(dtype=float)
+        err_color = _darken_color(pal_sub[sc], factor=0.78)
+        ax.bar(
+            x,
+            vals,
+            width=width,
+            bottom=bottom,
+            color=pal_sub[sc],
+            label=sc,
+            yerr=errs,
+            error_kw={"elinewidth": 0.7, "ecolor": err_color, "capsize": 1.6, "capthick": 0.7},
+        )
         bottom += vals
         legend_handles.append(Patch(facecolor=pal_sub[sc], edgecolor="none", label=sc))
+    _set_tighter_bar_limits(ax, x, width)
 
-    ax.set_ylabel("Percentage of total intensity (%)", fontsize=14)
-    ax.set_title("Relative lipid class composition by group (median %)", fontsize=18, pad=12)
+    ax.set_ylabel("Percentage of total intensity (%)", fontsize=20)
+    ax.set_title("Relative lipid class composition by group (median %)", fontsize=20, pad=12)
     ax.set_ylim(0, 100)
-    ax.tick_params(axis="y", labelsize=12)
+    ax.tick_params(axis="y", labelsize=18)
 
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
     leg2 = ax.legend(
         handles=legend_handles,
-        title="Class",
         bbox_to_anchor=(1.01, 1), loc="upper left",
-        frameon=False, fontsize=11, title_fontsize=12
+        frameon=False, fontsize=16, title_fontsize=16
     )
     fig.subplots_adjust(right=0.82)
 
@@ -292,29 +351,41 @@ def run_from_stats(
     fig, ax = plt.subplots(figsize=(12, 7))
     x = np.arange(len(med.index))
     ax.set_xticks(x)
-    ax.set_xticklabels([str(g) for g in med.index], rotation=45, ha="right", fontsize=13)
+    ax.set_xticklabels([str(g) for g in med.index], rotation=45, ha="right", fontsize=18)
+    _add_relative_background_ribbons(ax, med, x, pal_sub, alpha=0.18)
 
-    width = 0.8
+    width = 0.6
     bottom = np.zeros(len(med.index))
     legend_handles = []
     for sc in med.columns:
         vals = med[sc].values
-        ax.bar(x, vals, width=width, bottom=bottom, color=pal_sub[sc], label=sc)
+        errs = abs_err[sc].to_numpy(dtype=float)
+        err_color = _darken_color(pal_sub[sc], factor=0.78)
+        ax.bar(
+            x,
+            vals,
+            width=width,
+            bottom=bottom,
+            color=pal_sub[sc],
+            label=sc,
+            yerr=errs,
+            error_kw={"elinewidth": 0.7, "ecolor": err_color, "capsize": 1.6, "capthick": 0.7},
+        )
         bottom += vals
         legend_handles.append(Patch(facecolor=pal_sub[sc], edgecolor="none", label=sc))
+    _set_tighter_bar_limits(ax, x, width)
 
-    ax.set_ylabel("Total intensity (median of samples)", fontsize=14)
-    ax.set_title("Lipid class composition by group (median intensity)", fontsize=18, pad=12)
-    ax.tick_params(axis="y", labelsize=12)
+    ax.set_ylabel(absolute_label, fontsize=20)
+    ax.set_title("Lipid class composition by group (median intensity)", fontsize=20, pad=12)
+    ax.tick_params(axis="y", labelsize=18)
 
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
     leg3 = ax.legend(
         handles=legend_handles,
-        title="Class",
         bbox_to_anchor=(1.01, 1), loc="upper left",
-        frameon=False, fontsize=11, title_fontsize=12
+        frameon=False, fontsize=16, title_fontsize=16
     )
     fig.subplots_adjust(right=0.82)
 

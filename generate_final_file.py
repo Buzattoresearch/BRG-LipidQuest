@@ -4,6 +4,14 @@
 #   - Final_Annotated.csv
 #   - Final_Unknowns.csv
 # inside the main results folder.
+
+'''
+For RSD QC filtering:
+    a feature with 0, 1, or 2 detected QCs is not removed by QC RSD (only filtered by sample RSD);
+    a feature with 3 or more detected QCs is removed by QC RSD only if it exceeds the threshold; then the within-group RSD filter still runs after.
+That same behavior applies to normalized annotated, semi-quant annotated, before-normalization annotated, and unknowns.
+'''
+
 # -------------------------------------------------------------------------
 
 import pandas as pd
@@ -231,6 +239,76 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
     results_folder = Path(results_folder)
     debug_folder = results_folder / "debug"
     debug_folder.mkdir(parents=True, exist_ok=True)
+    
+     # -------- HELPERS ---------
+        
+    def _apply_qc_filter(df_in, removed_frames, label_prefix=""):
+        df_out = df_in.copy()
+
+        qc_rsd_col = None
+        if "RSD QCs (%)" in df_out.columns:
+            qc_rsd_col = "RSD QCs (%)"
+
+        qc_count_col = "QC detected count" if "QC detected count" in df_out.columns else None
+
+        if rsd_qc_thresh is None or qc_rsd_col is None:
+            print(f"[FINAL] {label_prefix}QC RSD filter skipped (no threshold or suitable column).")
+            return df_out
+
+        qc_vals = _to_num(df_out[qc_rsd_col])
+
+        # Default: keep everything
+        keep_qc = pd.Series(True, index=df_out.index)
+
+        if qc_count_col is not None:
+            qc_counts = pd.to_numeric(df_out[qc_count_col], errors="coerce")
+
+            # Only apply QC RSD filter where >= 3 QCs were detected before imputation
+            apply_qc_mask = qc_counts >= 3
+
+            keep_qc.loc[apply_qc_mask] = (
+                    qc_vals.loc[apply_qc_mask].isna() |
+                    (qc_vals.loc[apply_qc_mask] <= float(rsd_qc_thresh))
+                )
+        else:
+            # Fallback for old files lacking QC detected count
+            keep_qc = qc_vals.isna() | (qc_vals <= float(rsd_qc_thresh))
+
+        qc_fail_mask = ~keep_qc
+        if qc_fail_mask.any():
+            removed_qc_block = df_out.loc[qc_fail_mask].copy()
+            removed_qc_block["Removed reason"] = (
+                f"{label_prefix}{qc_rsd_col} > {rsd_qc_thresh}% "
+                f"(applied only when QC detected count >= 3)"
+            )
+            removed_qc_block["QC RSD (parsed)"] = qc_vals.loc[qc_fail_mask].values
+            if qc_count_col is not None:
+                removed_qc_block["QC detected count (parsed)"] = pd.to_numeric(
+                        df_out.loc[qc_fail_mask, qc_count_col], errors="coerce"
+                    ).values
+            removed_frames.append(removed_qc_block)
+            print(f"[FINAL] {label_prefix}Removed {int(qc_fail_mask.sum())} features by QC filtering")
+
+        return df_out.loc[keep_qc].copy()
+        
+    def _get_group_rsd_cols(df_in):
+        cols = []
+        for c in df_in.columns:
+            if not c.startswith("RSD_"):
+                continue
+            if c in {
+                "RSD QCs (%)",
+                "RSD QCs observed-only (%)",
+                "RSD QCs imputed (%)",
+                "RSD Samples (%)"
+            }:
+                continue
+            if c.strip().upper() == "RSD_QC [%]":
+                continue
+            cols.append(c)
+        return cols
+
+    # -------- END HELPERS --------
 
     pol_tag = ""
 
@@ -334,32 +412,16 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
         return pd.to_numeric(s, errors="coerce")
 
     # 1) QC RSD filter — record removals
-    if rsd_qc_thresh is not None and "RSD QCs (%)" in df_ann.columns:
-        qc_vals = _to_num(df_ann["RSD QCs (%)"])
-        keep_qc = qc_vals.isna() | (qc_vals <= float(rsd_qc_thresh))
-
-        qc_fail_mask = ~keep_qc
-        if qc_fail_mask.any():
-            removed_qc_block = df_ann.loc[qc_fail_mask].copy()
-            removed_qc_block["Removed reason"] = f"QC RSD > {rsd_qc_thresh}%"
-            removed_qc_block["QC RSD (parsed)"] = qc_vals.loc[qc_fail_mask].values
-            removed_ann_frames.append(removed_qc_block)
-            print(f"[FINAL] Removed {int(qc_fail_mask.sum())} features by QC RSD > {rsd_qc_thresh}%")
-
-        df_ann = df_ann.loc[keep_qc].copy()
-    else:
-        print("[FINAL] QC RSD filter skipped (no threshold or column).")
+    df_ann = _apply_qc_filter(df_ann, removed_ann_frames, label_prefix="")
 
     # 2) Within-group RSD filter — record removals
     if max_group_rsd_thresh is not None:
-        group_rsd_cols = [
-            c for c in df_ann.columns
-            if c.startswith("RSD_") and c.endswith(")") and "QCs" not in c and "Samples" not in c
-        ]
+        group_rsd_cols = _get_group_rsd_cols(df_ann)
         if group_rsd_cols:
             df_rsd = df_ann[group_rsd_cols].apply(_to_num)
             mask_all_na = df_rsd.isna().all(axis=1)
             keep_group = (df_rsd <= float(max_group_rsd_thresh)).any(axis=1) | mask_all_na
+            # Keep if any group passes OR keep if all group RSDs are NaN
 
             group_fail_mask = ~keep_group
             if group_fail_mask.any():
@@ -368,7 +430,7 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
                 removed_group_block["Max group RSD (parsed)"] = df_rsd.max(axis=1).loc[group_fail_mask].values
                 removed_group_block["Removed reason"] = f"All groups RSD > {max_group_rsd_thresh}% (or no group ≤ threshold)"
                 removed_ann_frames.append(removed_group_block)
-                print(f"[FINAL] Removed {int(group_fail_mask_semi.sum())} features by within-group RSD > {max_group_rsd_thresh}% (in all groups)")
+                print(f"[FINAL] Removed {int(group_fail_mask.sum())} features by within-group RSD > {max_group_rsd_thresh}% (in all groups)")
 
             df_ann = df_ann.loc[keep_group].copy()
         else:
@@ -381,18 +443,18 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
     if removed_ann_frames:
         removed_ann = pd.concat(removed_ann_frames, ignore_index=True)
         removed_ann.to_csv(removed_ann_path, index=False, encoding="utf-8-sig")
-        print(f"[FINAL] Saved RSD-removal debug file (annotated): {removed_ann_path.name} ({len(removed_ann)} rows)")
+        print(f"[FINAL] Saved RSD-removal debug file (annotated): {removed_ann_path.name} ({len(removed_ann)} rows)", flush = True)
     else:
-        print("[FINAL] No annotated rows removed by RSD filters (or filters disabled).")
+        print("[FINAL] No annotated rows removed by RSD filters (or filters disabled).", flush = True)
 
     # --- Exclude internal standards (Annotation Type == "IS") ---
     if "Annotation Type" in df_ann.columns:
         initial_count = len(df_ann)
         df_ann = df_ann[~df_ann["Annotation Type"].astype(str).str.upper().eq("IS")].copy()
         removed_count = initial_count - len(df_ann)
-        print(f"[INFO] Excluded {removed_count} internal standards (Annotation Type = 'IS') from annotated results.")
+        print(f"[INFO] Excluded {removed_count} internal standards (Annotation Type = 'IS') from annotated results.", flush = True)
     else:
-        print("[WARNING] 'Annotation Type' column not found; no IS exclusion applied.")
+        print("[WARNING] 'Annotation Type' column not found; no IS exclusion applied.", flush = True)
 
     # --- Add derived annotation columns ---
     df_ann["Species annotation"] = _build_species_annotation(df_ann)
@@ -401,6 +463,7 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
     # --- Define desired annotated columns ---
     base_cols = [
         "UniqueID", "RT (min)", "m/z", "Polarity", "Adducts", "Neutral mass",
+        "QC detected count", "RSD QCs (%)", "RSD Samples (%)",
         "Annotation", "Annotation level", "Species annotation", 
         "Annotation Type", "Annotation Source",
         "Headgroup", "Lipid Class",
@@ -408,16 +471,19 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
         "CCS (Å²)", "Mob. 1/K0", "ΔCCS [%]",
         "Molecular Formula", "Plasmenyl?",
         "Number of carbons in fatty acyls", "Double bond equivalents",
-        "Chain type", "PUFA?", "Modifications",
-        "RSD QCs (%)", "RSD Samples (%)",
+        "Chain type", "PUFA?", "Modifications",  
     ]
 
     # Detect sample-specific RSD columns
-    rsd_cols = [c for c in df_ann.columns if c.startswith("RSD_")]
-    rsd_cols = [c for c in rsd_cols if c not in base_cols]
+    rsd_cols = [c for c in df_ann.columns
+                if isinstance(c, str) and c.startswith(("RSD_", "QC detected")) and c not in base_cols]
 
     # Detect all sample columns (intensities)
-    sample_cols = [c for c in df_ann.columns if c.startswith("P_") or c.startswith("N_")]
+    sample_cols = [
+        c for c in df_ann.columns
+        if c not in base_cols and c not in rsd_cols and (c.startswith("P_") or c.startswith("N_"))
+    ]
+    sample_cols = [c for c in sample_cols if c != "QC detected count"]
 
     # --- Clean up sample column names (remove polarity, replicate suffixes, etc.) ---
     rename_map = {col: clean_sample_name(col) for col in sample_cols}
@@ -454,29 +520,12 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
         df_ann_semi = pd.read_csv(annotated_file_semi_quant, low_memory=False)
         removed_ann_frames_semi = []
 
-        # 1) QC RSD filter — record removals
-        if rsd_qc_thresh is not None and "RSD QCs (%)" in df_ann_semi.columns:
-            qc_vals_semi = _to_num(df_ann_semi["RSD QCs (%)"])
-            keep_qc_semi = qc_vals_semi.isna() | (qc_vals_semi <= float(rsd_qc_thresh))
-
-            qc_fail_mask_semi = ~keep_qc_semi
-            if qc_fail_mask_semi.any():
-                removed_qc_block_semi = df_ann_semi.loc[qc_fail_mask_semi].copy()
-                removed_qc_block_semi["Removed reason"] = f"QC RSD > {rsd_qc_thresh}%"
-                removed_qc_block_semi["QC RSD (parsed)"] = qc_vals_semi.loc[qc_fail_mask_semi].values
-                removed_ann_frames_semi.append(removed_qc_block_semi)
-                print(f"[FINAL] Removed {int(qc_fail_mask_semi.sum())} features by QC RSD > {rsd_qc_thresh}%")
-
-            df_ann_semi = df_ann_semi.loc[keep_qc_semi].copy()
-        else:
-            print("[FINAL] QC RSD filter skipped (no threshold or column).")
+        # 1) QC RSD filter — record removals (semi-quant)
+        df_ann_semi = _apply_qc_filter(df_ann_semi, removed_ann_frames_semi, label_prefix="[SEMI] ")
 
         # 2) Within-group RSD filter — record removals
         if max_group_rsd_thresh is not None:
-            group_rsd_cols_semi = [
-                c for c in df_ann_semi.columns
-                if c.startswith("RSD_") and c.endswith(")") and "QCs" not in c and "Samples" not in c
-            ]
+            group_rsd_cols_semi = _get_group_rsd_cols(df_ann_semi)
             if group_rsd_cols_semi:
                 df_rsd_semi = df_ann_semi[group_rsd_cols_semi].apply(_to_num)
                 mask_all_na_semi = df_rsd_semi.isna().all(axis=1)
@@ -489,7 +538,7 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
                     removed_group_block_semi["Max group RSD (parsed)"] = df_rsd_semi.max(axis=1).loc[group_fail_mask_semi].values
                     removed_group_block_semi["Removed reason"] = f"All groups RSD > {max_group_rsd_thresh}% (or no group ≤ threshold)"
                     removed_ann_frames_semi.append(removed_group_block_semi)
-                    print(f"[FINAL] Removed {int(group_fail_mask.sum())} features by within-group RSD > {max_group_rsd_thresh}% (in all groups)")
+                    print(f"[FINAL] Removed {int(group_fail_mask_semi.sum())} features by within-group RSD > {max_group_rsd_thresh}% (in all groups)")
 
                 df_ann_semi = df_ann_semi.loc[keep_group_semi].copy()
             else:
@@ -519,12 +568,14 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
         df_ann_semi["Species annotation"] = _build_species_annotation(df_ann_semi)
         df_ann_semi["Annotation level"] = _build_annotation_level(df_ann_semi)
 
-        # Detect sample-specific RSD columns
-        rsd_cols_semi = [c for c in df_ann_semi.columns if c.startswith("RSD_")]
-        rsd_cols_semi = [c for c in rsd_cols_semi if c not in base_cols]
-
-        # Detect all sample columns (intensities)
-        sample_cols_semi = [c for c in df_ann_semi.columns if c.startswith("P_") or c.startswith("N_")]
+        # Detect all sample columns
+        rsd_cols_semi = [c for c in df_ann.columns
+                        if isinstance(c, str) and c.startswith(("RSD_", "QC detected")) and c not in base_cols]
+        sample_cols_semi = [
+            c for c in df_ann_semi.columns
+            if c not in base_cols and c not in rsd_cols_semi and (c.startswith("P_") or c.startswith("N_"))
+        ]
+        sample_cols_semi = [c for c in sample_cols_semi if c != "QC detected count"]
 
         # --- Clean up sample column names (remove polarity, replicate suffixes, etc.) ---
         rename_map_semi = {col_semi: clean_sample_name(col_semi) for col_semi in sample_cols_semi}
@@ -569,38 +620,14 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
         print(f"[FINAL] Building before-normalization table from: {before_norm_src.name}")
         df_before = pd.read_csv(before_norm_src, low_memory=False)
         removed_before_frames = []
-
-        def _to_num_local(x):
-            s = pd.Series(x, copy=False).astype(str)
-            s = s.str.replace("%", "", regex=False)
-            s = s.str.replace(",", ".", regex=False)
-            s = s.str.extract(r"([-+]?[0-9]*\.?[0-9]+)")[0]
-            return pd.to_numeric(s, errors="coerce")
-
-        # Apply the SAME two RSD filters (QC and within-group) using the GUI thresholds
-        if rsd_qc_thresh is not None and "RSD QCs (%)" in df_before.columns:
-            qc_vals_b = _to_num_local(df_before["RSD QCs (%)"])
-            keep_qc_b = qc_vals_b.isna() | (qc_vals_b <= float(rsd_qc_thresh))
-
-            qc_fail_b = ~keep_qc_b
-            if qc_fail_b.any():
-                removed_qc_b = df_before.loc[qc_fail_b].copy()
-                removed_qc_b["Removed reason"] = f"[BEFORE] QC RSD > {rsd_qc_thresh}%"
-                removed_qc_b["QC RSD (parsed)"] = qc_vals_b.loc[qc_fail_b].values
-                removed_before_frames.append(removed_qc_b)
-                print(f"[FINAL] [BEFORE] Removed {int(qc_fail_b.sum())} by QC RSD > {rsd_qc_thresh}%")
-
-            df_before = df_before.loc[keep_qc_b].copy()
-        else:
-            print("[FINAL] [BEFORE] QC RSD filter skipped (no threshold or column).")
+        
+        # Apply the SAME two RSD filters (QC and within-group) using the GUI thresholds (before)
+        df_before = _apply_qc_filter(df_before, removed_before_frames, label_prefix="[BEFORE] ")
 
         if max_group_rsd_thresh is not None:
-            group_rsd_cols_b = [
-                c for c in df_before.columns
-                if c.startswith("RSD_") and c.endswith(")") and "QCs" not in c and "Samples" not in c
-            ]
+            group_rsd_cols_b = _get_group_rsd_cols(df_before)
             if group_rsd_cols_b:
-                df_rsd_b = df_before[group_rsd_cols_b].apply(_to_num_local)
+                df_rsd_b = df_before[group_rsd_cols_b].apply(_to_num)
                 mask_all_na_b = df_rsd_b.isna().all(axis=1)
                 keep_group_b = (df_rsd_b <= float(max_group_rsd_thresh)).any(axis=1) | mask_all_na_b
 
@@ -634,6 +661,7 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
 
         base_cols_b = [
             "UniqueID", "RT (min)", "m/z", "Polarity", "Adducts", "Neutral mass",
+            "QC detected count", "RSD QCs (%)", "RSD Samples (%)",
             "Annotation", "Annotation level", "Species annotation", 
             "Annotation Type", "Annotation Source",
             "Headgroup", "Lipid Class",
@@ -642,11 +670,13 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
             "Molecular Formula", "Plasmenyl?",
             "Number of carbons in fatty acyls", "Double bond equivalents",
             "Chain type", "PUFA?", "Modifications",
-            "RSD QCs (%)", "RSD Samples (%)",
+
         ]
-        rsd_cols_b = [c for c in df_before.columns if c.startswith("RSD_")]
-        rsd_cols_b = [c for c in rsd_cols_b if c not in base_cols_b]
-        sample_cols_b = [c for c in df_before.columns if c.startswith("P_") or c.startswith("N_")]
+        rsd_cols_b = [c for c in df_ann.columns
+                        if isinstance(c, str) and c.startswith(("RSD_", "QC detected")) and c not in base_cols_b]
+        sample_cols_b = [c for c in df_before.columns 
+                         if c not in base_cols_b and c not in rsd_cols and (c.startswith("P_") or c.startswith("N_"))]
+        sample_cols_b = [c for c in sample_cols_b if c != "QC detected count"]
 
         rename_map_b = {col: clean_sample_name(col) for col in sample_cols_b}
         df_before.rename(columns=rename_map_b, inplace=True)
@@ -679,27 +709,10 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
         df_unk = pd.read_csv(unknowns_file, low_memory=False)
         removed_unk_frames = []
 
-        if rsd_qc_thresh is not None and "RSD QCs (%)" in df_unk.columns:
-            qc_vals_u = _to_num(df_unk["RSD QCs (%)"])
-            keep_qc_u = qc_vals_u.isna() | (qc_vals_u <= float(rsd_qc_thresh))
-
-            qc_fail_u = ~keep_qc_u
-            if qc_fail_u.any():
-                removed_qc_u = df_unk.loc[qc_fail_u].copy()
-                removed_qc_u["Removed reason"] = f"[UNK] QC RSD > {rsd_qc_thresh}%"
-                removed_qc_u["QC RSD (parsed)"] = qc_vals_u.loc[qc_fail_u].values
-                removed_unk_frames.append(removed_qc_u)
-                print(f"[FINAL] [UNK] Removed {int(qc_fail_u.sum())} features by QC RSD > {rsd_qc_thresh}%")
-
-            df_unk = df_unk.loc[keep_qc_u].copy()
-        else:
-            print("[FINAL] [UNK] QC RSD filter skipped (no threshold or column).")
+        df_unk = _apply_qc_filter(df_unk, removed_unk_frames, label_prefix="[UNK] ")
 
         if max_group_rsd_thresh is not None:
-            group_rsd_cols_u = [
-                c for c in df_unk.columns
-                if c.startswith("RSD_") and c.endswith(")") and "QCs" not in c and "Samples" not in c
-            ]
+            group_rsd_cols_u = _get_group_rsd_cols(df_unk)
             if group_rsd_cols_u:
                 df_rsd_u = df_unk[group_rsd_cols_u].apply(_to_num)
                 mask_all_na_u = df_rsd_u.isna().all(axis=1)
@@ -722,12 +735,16 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
 
         base_cols_unk = [
             "UniqueID", "RT (min)", "m/z", "Polarity",
-            "RSD QCs (%)", "RSD Samples (%)",
+            "QC detected count", "RSD QCs (%)", "RSD Samples (%)",
         ]
 
-        rsd_cols_unk = [c for c in df_unk.columns if c.startswith("RSD_")]
-        rsd_cols_unk = [c for c in rsd_cols_unk if c not in base_cols_unk]
-        sample_cols_unk = [c for c in df_unk.columns if c.startswith("P_") or c.startswith("N_")]
+        rsd_cols_unk = [c for c in df_ann.columns
+                        if isinstance(c, str) and c.startswith(("RSD_", "QC detected")) and c not in base_cols_unk]
+        sample_cols_unk = [
+            c for c in df_unk.columns
+            if c not in base_cols_unk and c not in rsd_cols_unk and (c.startswith("P_") or c.startswith("N_"))
+        ]
+        sample_cols_unk = [c for c in sample_cols_unk if c != "QC detected count"]
 
         rename_map_unk = {col: clean_sample_name(col) for col in sample_cols_unk}
         df_unk.rename(columns=rename_map_unk, inplace=True)

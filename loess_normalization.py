@@ -248,7 +248,8 @@ def loess_normalization(annotated_csv, unknowns_csv, sample_groups_csv, output_f
     core_cols = [
         "UniqueID", "RT (min)", "m/z", "Neutral mass", "Adducts", "Polarity", "Internal Standard",
         "RSD QCs (%)", "RSD Samples (%)", "RSD_12x [%]", "RSD_15x [%]", "RSD_5x [%]",
-        "RSD_8x [%]", "RSD_QC [%]", "MS/MS available?", "Annotation", "Annotation Type",
+        "RSD_8x [%]", "RSD_QC [%]", "QC detected count", "RSD QCs observed-only (%)",
+        "MS/MS available?", "Annotation", "Annotation Type",
         "Metaboscape Annotation Status", "Annotation Source", "Headgroup", "Lipid Class",
         "Δm/z (mDa)", "Δm/z (ppm)", "MS/MS score", "Annotation tier", "mSigma", 
         "CCS (Å²)", "Mob. 1/K0", "ΔCCS [%]",

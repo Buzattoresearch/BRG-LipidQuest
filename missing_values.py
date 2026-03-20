@@ -220,8 +220,11 @@ def impute_missing_values(final_csv, group_csv, output_folder="results",
         .replace(["NA", "NaN", "nan", ""], np.nan)
         .astype(float)
     )
-    # zeros treated as missing per your convention
+    # zeros treated as missing
     df[sample_cols] = df[sample_cols].mask(df[sample_cols] == 0, np.nan)
+    
+    # Keep pre-imputation values for QC detectability metrics
+    df_pre_impute = df.copy()
 
     # =======================
     # 3) Vectorized per-feature/per-group imputation
@@ -322,12 +325,24 @@ def impute_missing_values(final_csv, group_csv, output_folder="results",
         df_imputed = df_imputed[cols]
 
     # QC vs non-QC RSDs
+    # QC vs non-QC RSDs
     qc_samples = [s for s in group_df.loc[group_df["Group"].str.lower() == "qc", "Sample"] if s in sample_cols]
     non_qc_samples = [s for s in sample_cols if s not in qc_samples]
 
-    df_imputed["RSD QCs (%)"] = df_imputed[qc_samples].apply(rsd, axis=1) if qc_samples else np.nan
-    if not qc_samples:
-        print("Warning: No QC samples found; RSD QCs (%) set to NaN.", flush=True)
+    if qc_samples:
+        # Count QCs detected BEFORE imputation
+        df_imputed["QC detected count"] = df_pre_impute[qc_samples].notna().sum(axis=1)
+
+        # QC RSD based only on observed QC values BEFORE imputation
+        df_imputed["RSD QCs observed-only (%)"] = df_pre_impute[qc_samples].apply(rsd, axis=1)
+
+        # Keep backward-compatible column name for downstream use if needed
+        df_imputed["RSD QCs (%)"] = df_imputed["RSD QCs observed-only (%)"]
+    else:
+        df_imputed["QC detected count"] = np.nan
+        df_imputed["RSD QCs observed-only (%)"] = np.nan
+        df_imputed["RSD QCs (%)"] = np.nan
+        print("Warning: No QC samples found; QC metrics set to NaN.", flush=True)
 
     df_imputed["RSD Samples (%)"] = df_imputed[non_qc_samples].apply(rsd, axis=1) if non_qc_samples else np.nan
     if not non_qc_samples:
@@ -344,6 +359,23 @@ def impute_missing_values(final_csv, group_csv, output_folder="results",
         df_imputed[f"Max Intensity ({g})"] = df_imputed[g_samples].max(axis=1)
         # New naming convention, consistent with LOESS / median
         df_imputed[f"RSD_{g} [%]"] = df_imputed[g_samples].apply(rsd, axis=1)
+        
+    # Reorder new QC columns to appear immediately after the QC group RSD column
+    cols = list(df_imputed.columns)
+    new_qc_cols = ["QC detected count", "RSD QCs observed-only (%)"]
+    existing_new_qc_cols = [c for c in new_qc_cols if c in cols]
+
+    qc_group_names = [str(g) for g in groups if str(g).strip().lower() == "qc"]
+    anchor_candidates = [f"RSD_{g} [%]" for g in qc_group_names]
+    anchor_col = next((c for c in anchor_candidates if c in cols), None)
+
+    if anchor_col is not None and existing_new_qc_cols:
+        for c in existing_new_qc_cols:
+            cols.remove(c)
+        anchor_idx = cols.index(anchor_col) + 1
+        for offset, c in enumerate(existing_new_qc_cols):
+            cols.insert(anchor_idx + offset, c)
+        df_imputed = df_imputed[cols]
 
     # =======================
     # 5) Save

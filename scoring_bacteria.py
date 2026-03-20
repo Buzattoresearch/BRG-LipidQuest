@@ -281,7 +281,7 @@ def calculate_sensitivity_score(polarity, adduct, lipid_class, sensitivity_dict)
     penalty = 0.0
 
     # Penalty due to rarity in LMSD (lipids that have been detected in nature)
-    if lipid_class in ['M(IP)2C', 'PnC', 'DGTA', 'PnE', 'PGS', 'PT', 'PS-NAc', 'NAPE',
+    if lipid_class in ['M(IP)2C', 'PnC', 'DGTA', 'PnE', 'PGS', 'PT', 'PS-NAc',
                        'SLBPA', 'PPA', 'PE-IsoK', 'LSM', 'PGP', 'DGTS', 'GlcADG', 'GP',
                        'Glc-GP', 'DGMG', 'MGMG', 'DGCC']:  # <= 0.1% of LMSD entries
         penalty += 0.9
@@ -305,9 +305,9 @@ def calculate_sensitivity_score(polarity, adduct, lipid_class, sensitivity_dict)
     if lipid_class in ['PMeOH', 'PEtOH', 'WE', 'FAL', 'FOH']:
         penalty += 0.9
 
-    if lipid_class in ['PK', 'PR', 'SL', 'Other', 'GP', 'DGTS', 'HexSPB', 'NAT', 'SHexCer',
+    if lipid_class in ['PK', 'PR', 'Other', 'GP', 'DGTS', 'HexSPB', 'NAT', 'SHexCer',
                        'SQDG', 'SMGDG', 'CerP', 'MIPC', 'M(IP)2C', 'SCer', 'HC', 'PnC',
-                       'PnE', 'FOH', 'FAL', 'LSM', 'CDP-DG', 'GlcADG', 'DGCC',
+                       'PnE', 'FOH', 'FAL', 'LSM', 'GlcADG', 'DGCC',
                        'SulfateHexSPB', 'MGMG', 'DGMG', 'MGDG', 'DGDG', 'PIM',
                        'PI-Cer', 'HBMP', 'ACer', 'Acer', 'PE-Cer', 'NAE', 'PIP']:
         penalty += 0.9

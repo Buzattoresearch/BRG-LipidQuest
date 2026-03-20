@@ -2,17 +2,17 @@
 # Heatmaps for standardized Lipid workflow (UniqueID-based).
 # - Loads via Stats.utils.load_dataset(file_path, group_file)
 # - Autoscaling
-# - ANOVA + FDR feature ranking
+# - Kruskal-Wallis + FDR feature ranking
 # - Clustered heatmaps at multiple feature cutoffs
 # - Also generates a "without outliers" version (z>4 filter)
-# - Saves PNG + SVG, autoscaled data, ANOVA table, outlier list
+# - Saves PNG + SVG, autoscaled data, rank table, outlier list
 # ------------------------------------------------------------
 
 import os
 import warnings
 from pathlib import Path
 import re
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 
 import numpy as np
 import pandas as pd
@@ -20,17 +20,18 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from sklearn.preprocessing import StandardScaler
-from scipy.stats import f_oneway
+from scipy.stats import kruskal
 from statsmodels.stats.multitest import multipletests
 
 from Stats.utils import load_dataset, prepare_output_dir
+from Stats.figure_style import build_group_palette as _shared_build_group_palette, get_figure_style
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.simplefilter("ignore", pd.errors.PerformanceWarning)
 
 import matplotlib as mpl
-mpl.rcParams["font.family"] = "sans-serif"
-mpl.rcParams["font.sans-serif"] = ["DejaVu Sans", "Arial", "Liberation Sans"]
+mpl.rcParams["font.family"] = "Arial"
+mpl.rcParams["font.sans-serif"] = ["Arial", "Liberation Sans", "DejaVu Sans"]
 mpl.rcParams["mathtext.default"] = "regular" 
 
 plt.rcParams["font.size"] = 14
@@ -46,6 +47,25 @@ def _ensure_dir(p: Path) -> Path:
     p.mkdir(parents=True, exist_ok=True)
     return p
 
+def _safe_savefig(fig, out_path: Path, **kwargs):
+    """
+    Save a figure after forcing parent directory creation and checking
+    for Windows path-length problems.
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    out_str = str(out_path)
+
+    # Conservative limit for Windows. Real limit depends on settings,
+    # but PIL often fails before you get a useful error.
+    if os.name == "nt" and len(out_str) >= 240:
+        raise OSError(
+            f"Output path too long for Windows/PIL ({len(out_str)} chars):\n{out_str}\n"
+            "Shorten the output folder path or file name."
+        )
+
+    fig.savefig(out_path, **kwargs)
 
 def _autoscale_df(X: pd.DataFrame, save_dir: Path, filename: str) -> pd.DataFrame:
     """Autoscale (z-score across samples) and save the scaled matrix."""
@@ -59,15 +79,15 @@ def _autoscale_df(X: pd.DataFrame, save_dir: Path, filename: str) -> pd.DataFram
     return X_scaled
 
 
-def _anova_rank_features(X_scaled: pd.DataFrame, groups: pd.Series, save_dir: Path, filename: str) -> pd.DataFrame:
+def _kruskal_rank_features(X_scaled: pd.DataFrame, groups: pd.Series, save_dir: Path, filename: str) -> pd.DataFrame:
     """
-    One-way ANOVA for each feature across groups + FDR.
+    Kruskal-Wallis rank test for each feature across groups + FDR.
     Returns a sorted dataframe (by Adjusted_P) and writes it to disk.
     """
     groups = groups.astype(str)
     unique_groups = groups.unique()
 
-    # If there's only 1 group, ANOVA is not defined—return neutral p-values
+    # If there's only 1 group, the omnibus test is not defined - return neutral p-values.
     if len(unique_groups) < 2:
         out = pd.DataFrame({"Feature": X_scaled.columns, "P_Value": 1.0})
         out["Adjusted_P_Value"] = 1.0
@@ -77,21 +97,25 @@ def _anova_rank_features(X_scaled: pd.DataFrame, groups: pd.Series, save_dir: Pa
 
     pvals = []
     for feat in X_scaled.columns:
-        # collect values by group for this feature
-        by_group = [X_scaled.loc[groups == g, feat].values for g in unique_groups]
-        # must have at least 2 points per group for a valid F-test; otherwise set high p
-        if all(len(v) > 1 for v in by_group):
-            p = f_oneway(*by_group).pvalue
-        else:
+        by_group = [
+            pd.to_numeric(X_scaled.loc[groups == g, feat], errors="coerce").dropna().values
+            for g in unique_groups
+        ]
+        valid_groups = [v for v in by_group if len(v) > 0]
+        if len(valid_groups) < 2:
             p = 1.0
+        else:
+            try:
+                p = float(kruskal(*valid_groups).pvalue)
+            except Exception:
+                p = 1.0
         pvals.append(p)
 
-    anova_df = pd.DataFrame({"Feature": X_scaled.columns, "P_Value": pvals})
-    # FDR (Benjamini-Hochberg)
-    anova_df["Adjusted_P_Value"] = multipletests(anova_df["P_Value"].values, method="fdr_bh")[1]
-    anova_df = anova_df.sort_values("Adjusted_P_Value").reset_index(drop=True)
-    anova_df.to_csv(save_dir / filename, index=False, encoding="utf-8-sig")
-    return anova_df
+    rank_df = pd.DataFrame({"Feature": X_scaled.columns, "P_Value": pvals})
+    rank_df["Adjusted_P_Value"] = multipletests(rank_df["P_Value"].values, method="fdr_bh")[1]
+    rank_df = rank_df.sort_values("Adjusted_P_Value").reset_index(drop=True)
+    rank_df.to_csv(save_dir / filename, index=False, encoding="utf-8-sig")
+    return rank_df
 
 def _sanitize_filename(s: str) -> str:
     return re.sub(r'[<>:."/\\|?*]', "_", str(s))
@@ -130,13 +154,13 @@ def _default_class_to_category() -> dict:
     """
     return {
         # Fatty acyls
-        "FA": {"CAR", "CoA", "FA", "FAG", "FAHFA", "FAL", "FOH", "HC", "NA", "NAE", "NAT", "WE"},
+        "FA": {"CAR", "CoA", "FA", "FAG", "FAHFA", "FAL", "FOH", "HC", "NAx", "NAE", "NAT", "WE"},
 
         # Glycerolipids
-        "GL": {"MG", "DG", "TG", "DGCC", "DGMG", "DGDG","DGTA", "DGTS", "GlcADG", "MGDG", "MGMG", "SQDG", "SQMG"},
+        "GL": {"MG", "DG", "TG", "DGCC", "Hex2MG", "Hex2DG","DGTA", "DGTS", "GlcADG", "HexDG", "HexMG", "SQDG", "SQMG"},
 
         # Glycerophospholipids
-        "GP": {"PC", "PE", "PG", "PI", "PS", "PA", "CL",
+        "GP": {"PC", "PE", "PEth", "PG", "PI", "PS", "PA", "CL", "MLCL", "DLCL",
                "LPC", "LPE", "LPG", "LPI", "LPS", "LPA",
                "BMP", "CDP-DG", "Glc-GP", "GP", "PIM", "PIP", "PnC", "PnE", "PPA"},
 
@@ -260,45 +284,34 @@ def _remove_extreme_feature_outliers(X: pd.DataFrame, z_thresh: float = 4.0) -> 
 
 def _group_colorbar(groups: pd.Series, group_colors=None, group_order=None):
     groups = groups.astype(str)
-    unique_in_order = list(pd.unique(groups))
-
-    # Separate QC (case-insensitive)
-    qc_labels  = [g for g in unique_in_order if g.lower() == "qc"]
-    non_qc     = [g for g in unique_in_order if g.lower() != "qc"]
-
-    # Legend order: user order first, then remaining, QC last
-    if group_order:
-        ordered_non_qc = [g for g in group_order if g in non_qc] + [g for g in non_qc if g not in group_order]
-    else:
-        ordered_non_qc = non_qc[:]
-    legend_order = ordered_non_qc + qc_labels
-
-    # Fallback cycle
-    cycle = plt.rcParams.get("axes.prop_cycle").by_key().get("color", []) or ["#1f77b4"]
-
-    # Build color map honoring user palette first
-    color_map = {}
-    # non-QC first
-    for i, g in enumerate(ordered_non_qc):
-        c = (group_colors or {}).get(g)
-        color_map[g] = c if c else cycle[i % len(cycle)]
-    # QC color(s)
-    for g in qc_labels:
-        c = (group_colors or {}).get(g)
-        color_map[g] = c if c else "#000000"
-
-    # Ensure every group seen gets a color (safety backfill)
-    for g in unique_in_order:
-        if g not in color_map:
-            color_map[g] = cycle[len(color_map) % len(cycle)]
-
-    # Per-sample colors in sample order
+    legend_order, color_map = _shared_build_group_palette(groups, group_colors=group_colors, group_order=group_order)
     col_colors = [color_map[g] for g in groups]
-
     legend_handles = [
         plt.matplotlib.patches.Patch(color=color_map[g], label=g) for g in legend_order
     ]
     return col_colors, legend_handles
+
+
+def _ordered_groups_present(groups: pd.Series, group_order=None) -> list[str]:
+    present = pd.unique(groups.astype(str)).tolist()
+    if not group_order:
+        return present
+    ordered = [g for g in group_order if g in present]
+    rest = [g for g in present if g not in ordered]
+    return ordered + rest
+
+
+def _order_samples_by_group(X: pd.DataFrame, y: pd.Series, group_order=None) -> tuple[pd.DataFrame, pd.Series]:
+    ordered_groups = _ordered_groups_present(y, group_order=group_order)
+    sample_rank = {sample: i for i, sample in enumerate(X.index.astype(str).tolist())}
+    sort_df = pd.DataFrame({
+        "Sample": X.index.astype(str),
+        "Group": y.reindex(X.index).astype(str).values,
+    })
+    sort_df["_group_rank"] = sort_df["Group"].map({g: i for i, g in enumerate(ordered_groups)}).fillna(len(ordered_groups)).astype(int)
+    sort_df["_sample_rank"] = sort_df["Sample"].map(sample_rank).fillna(len(sample_rank)).astype(int)
+    ordered_samples = sort_df.sort_values(["_group_rank", "_sample_rank"], kind="stable")["Sample"].tolist()
+    return X.loc[ordered_samples], y.loc[ordered_samples]
 
 
 def _dynamic_figsize(n_features: int, n_samples: int, row_height_inch: float = 0.25, top_bottom_margin_inch: float = 2.5) -> tuple:
@@ -311,6 +324,340 @@ def _dynamic_figsize(n_features: int, n_samples: int, row_height_inch: float = 0
     height = (n_features * row_height_inch) + top_bottom_margin_inch
     return (width, height)
 
+
+def _annotation_width_boost(labels: list[str]) -> float:
+    """Return extra figure width for long annotation labels."""
+    if not labels:
+        return 0.0
+    max_len = max(len(str(label)) for label in labels)
+    if max_len <= 24:
+        return 0.0
+    return min(12.0, 0.11 * (max_len - 24))
+
+
+def _build_uid_to_annotation(feature_meta: pd.DataFrame) -> dict[str, str]:
+    if not isinstance(feature_meta, pd.DataFrame) or feature_meta.empty or "UniqueID" not in feature_meta.columns:
+        return {}
+    ann_col = _find_meta_col(feature_meta, {"annotation", "name", "lipid", "noabbrev"})
+    if ann_col is None:
+        return {}
+    tmp = feature_meta[["UniqueID", ann_col]].copy()
+    tmp["UniqueID"] = tmp["UniqueID"].astype(str).str.strip()
+    tmp[ann_col] = tmp[ann_col].astype(str).str.strip()
+    tmp = tmp.drop_duplicates("UniqueID")
+    return dict(zip(tmp["UniqueID"], tmp[ann_col]))
+
+
+def get_available_annotations(file_path: str) -> List[str]:
+    try:
+        df = pd.read_csv(file_path, low_memory=False, usecols=["Annotation"])
+    except Exception:
+        try:
+            df = pd.read_csv(file_path, low_memory=False)
+        except Exception:
+            return []
+    if "Annotation" not in df.columns:
+        return []
+    annotations = df["Annotation"].dropna().astype(str).str.strip()
+    annotations = annotations[annotations.ne("") & ~annotations.str.lower().eq("nan")]
+    return sorted(annotations.unique().tolist(), key=str.casefold)
+
+
+def _plot_selected_lipid_heatmap(
+    H: pd.DataFrame,
+    y_groups: pd.Series,
+    out_png: Path,
+    out_svg: Path,
+    group_colors=None,
+    group_order=None,
+    style: Optional[dict] = None,
+):
+    style = style or get_figure_style(False, 100)
+    if H.empty:
+        return
+
+    fig_w = max(7.5, 0.4 * H.shape[1] + 3.2)
+    fig_h = max(4.5, 0.45 * H.shape[0] + 2.6)
+
+    with mpl.rc_context({
+        "font.family": style["font_family"],
+        "font.size": style.get("base_font_size", style["label_size"]),
+        "axes.titlesize": style["title_size"],
+        "axes.labelsize": style["label_size"],
+        "xtick.labelsize": style["tick_size"],
+        "ytick.labelsize": style["tick_size"],
+    }):
+        fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
+        ax = fig.add_subplot(111)
+
+        vals = H.to_numpy(dtype=float)
+        vmax = float(np.nanmax(np.abs(vals))) if np.isfinite(vals).any() else 1.0
+        if not np.isfinite(vmax) or vmax <= 0:
+            vmax = 1.0
+
+        sns.heatmap(
+            H,
+            ax=ax,
+            cmap=style["diverging_cmap"],
+            vmin=-vmax,
+            vmax=vmax,
+            cbar_kws={"label": "Standardized abundance", "shrink": 0.42},
+            linewidths=0.4,
+            linecolor="white",
+        )
+
+        ax.set_xlabel("Samples", fontsize=style["label_size"], labelpad=12)
+        ax.set_ylabel("")
+        ax.tick_params(axis="x", rotation=55)
+        plt.setp(ax.get_xticklabels(), ha="right")
+        plt.setp(ax.get_yticklabels(), rotation=0)
+
+        col_colors, _legend_handles = _group_colorbar(y_groups, group_colors=group_colors, group_order=group_order)
+        ordered_groups = _ordered_groups_present(y_groups, group_order=group_order)
+        group_counts = y_groups.astype(str).value_counts()
+        centers = []
+        start = 0
+        for group in ordered_groups:
+            count = int(group_counts.get(group, 0))
+            if count <= 0:
+                continue
+            end = start + count
+            centers.append(((start + end - 1) / 2.0, group))
+            if end < H.shape[1]:
+                ax.axvline(end, color="black", linewidth=0.8, alpha=0.35)
+            start = end
+        fig.subplots_adjust(left=0.24, right=0.88, bottom=0.2, top=0.82)
+        fig.canvas.draw()
+        heatmap_pos = ax.get_position()
+        fig_height_inch = fig.get_size_inches()[1]
+        label_height_rel = 0.16 / fig_height_inch
+        bar_height_rel = 0.10 / fig_height_inch
+        gap_rel = 0.03 / fig_height_inch
+        ax_bar = fig.add_axes([
+            heatmap_pos.x0,
+            heatmap_pos.y1 + gap_rel,
+            heatmap_pos.width,
+            bar_height_rel,
+        ])
+        ax_labels = fig.add_axes([
+            heatmap_pos.x0,
+            heatmap_pos.y1 + gap_rel + bar_height_rel + gap_rel,
+            heatmap_pos.width,
+            label_height_rel,
+        ])
+        rgba_row = np.array([mpl.colors.to_rgba(c) for c in col_colors], dtype=float).reshape(1, len(col_colors), 4)
+        ax_bar.imshow(rgba_row, aspect="auto", interpolation="none")
+        ax_bar.set_xticks([])
+        ax_bar.set_yticks([])
+        for spine in ax_bar.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(0.8)
+            spine.set_color("white")
+        for i in range(1, len(col_colors)):
+            ax_bar.axvline(i - 0.5, color="white", linewidth=1)
+        ax_labels.set_xticks([])
+        ax_labels.set_yticks([])
+        ax_labels.set_frame_on(False)
+        ax_labels.set_xlim(-0.5, H.shape[1] - 0.5)
+        ax_bar.set_xlim(-0.5, H.shape[1] - 0.5)
+        for x_pos, group in centers:
+            ax_labels.text(
+                x_pos,
+                0.0,
+                str(group),
+                ha="center",
+                va="bottom",
+                fontsize=max(style["tick_size"] - 1, 8),
+                fontweight="semibold",
+            )
+        fig.suptitle("Selected lipid heatmap", fontsize=style["title_size"], fontweight="bold", y=0.985)
+        _safe_savefig(fig, out_png, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.2)
+        _safe_savefig(fig, out_svg, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.2)
+        plt.close(fig)
+
+
+def _plot_all_features_by_class_heatmap(
+    X_scaled: pd.DataFrame,
+    y_groups: pd.Series,
+    feature_meta: pd.DataFrame,
+    save_dir: Path,
+    basename: str,
+    group_colors=None,
+    group_order=None,
+    style: Optional[dict] = None,
+):
+    style = style or get_figure_style(False, 100)
+    if X_scaled.empty:
+        return
+
+    uid_to_class = _build_uid_to_class(feature_meta)
+    uid_to_annotation = _build_uid_to_annotation(feature_meta)
+
+    ordered_samples_X, ordered_groups = _order_samples_by_group(X_scaled, y_groups, group_order=group_order)
+    feature_rows = []
+    for uid in ordered_samples_X.columns.astype(str):
+        lipid_class = str(uid_to_class.get(str(uid).strip(), "Unknown")).strip() or "Unknown"
+        annotation = str(uid_to_annotation.get(str(uid).strip(), str(uid))).strip() or str(uid)
+        feature_rows.append({
+            "UniqueID": str(uid),
+            "Class": lipid_class,
+            "Annotation": annotation,
+        })
+    feature_order_df = pd.DataFrame(feature_rows)
+    feature_order_df["_class_sort"] = feature_order_df["Class"].astype(str).str.casefold()
+    feature_order_df["_annotation_sort"] = feature_order_df["Annotation"].astype(str).str.casefold()
+    feature_order_df["_uid_sort"] = feature_order_df["UniqueID"].astype(str).str.casefold()
+    feature_order_df = feature_order_df.sort_values(
+        ["_class_sort", "_annotation_sort", "_uid_sort"],
+        kind="stable",
+    ).reset_index(drop=True)
+
+    ordered_features = feature_order_df["UniqueID"].tolist()
+    H = ordered_samples_X.loc[:, ordered_features].T
+
+    row_height = 0.065
+    fig_w = max(8.5, 0.4 * H.shape[1] + 3.8)
+    fig_h = max(6.0, row_height * H.shape[0] + 3.0)
+
+    with mpl.rc_context({
+        "font.family": style["font_family"],
+        "font.size": style.get("base_font_size", style["label_size"]),
+        "axes.titlesize": style["title_size"],
+        "axes.labelsize": style["label_size"],
+        "xtick.labelsize": style["tick_size"],
+        "ytick.labelsize": max(style["tick_size"] - 1, 7),
+    }):
+        fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
+        ax = fig.add_subplot(111)
+
+        vals = H.to_numpy(dtype=float)
+        vmax = float(np.nanmax(np.abs(vals))) if np.isfinite(vals).any() else 1.0
+        if not np.isfinite(vmax) or vmax <= 0:
+            vmax = 1.0
+
+        sns.heatmap(
+            H,
+            ax=ax,
+            cmap=style["diverging_cmap"],
+            vmin=-vmax,
+            vmax=vmax,
+            cbar_kws={"label": "Standardized abundance", "shrink": 0.42},
+            linewidths=0.0,
+            xticklabels=True,
+            yticklabels=False,
+        )
+
+        ax.set_xlabel("Samples", fontsize=style["label_size"], labelpad=12)
+        ax.set_ylabel("")
+        ax.tick_params(axis="x", rotation=55)
+        plt.setp(ax.get_xticklabels(), ha="right")
+
+        col_colors, _legend_handles = _group_colorbar(ordered_groups, group_colors=group_colors, group_order=group_order)
+        ordered_group_names = _ordered_groups_present(ordered_groups, group_order=group_order)
+        group_counts = ordered_groups.astype(str).value_counts()
+        sample_centers = []
+        start = 0
+        for group in ordered_group_names:
+            count = int(group_counts.get(group, 0))
+            if count <= 0:
+                continue
+            end = start + count
+            sample_centers.append(((start + end - 1) / 2.0, group))
+            if end < H.shape[1]:
+                ax.axvline(end, color="black", linewidth=0.8, alpha=0.3)
+            start = end
+
+        class_boundaries = []
+        class_labels = []
+        start_idx = 0
+        classes = feature_order_df["Class"].tolist()
+        for idx, cls in enumerate(classes):
+            if idx == 0 or cls != classes[idx - 1]:
+                start_idx = idx
+            if idx == len(classes) - 1 or cls != classes[idx + 1]:
+                end_idx = idx + 1
+                class_boundaries.append(end_idx)
+                class_labels.append({
+                    "y": (start_idx + end_idx - 1) / 2.0,
+                    "cls": cls,
+                    "span": end_idx - start_idx,
+                })
+        for boundary in class_boundaries[:-1]:
+            ax.axhline(boundary, color="black", linewidth=1.4, alpha=0.55)
+        x_pos = -0.02
+        filtered_labels = []
+        last_y = None
+        for item in class_labels:
+            if item["span"] < 4:
+                continue
+            if last_y is not None and abs(item["y"] - last_y) < 8:
+                continue
+            filtered_labels.append(item)
+            last_y = item["y"]
+        for item in filtered_labels:
+            ax.text(
+                x_pos,
+                item["y"] + 0.5,
+                str(item["cls"]),
+                transform=ax.get_yaxis_transform(),
+                ha="right",
+                va="center",
+                fontsize=max(style["tick_size"] - 1, 8),
+                fontweight="semibold",
+            )
+        fig.subplots_adjust(left=0.16, right=0.88, bottom=0.16, top=0.82)
+        fig.canvas.draw()
+        heatmap_pos = ax.get_position()
+        fig_height_inch = fig.get_size_inches()[1]
+        label_height_rel = 0.16 / fig_height_inch
+        bar_height_rel = 0.10 / fig_height_inch
+        gap_rel = 0.03 / fig_height_inch
+        ax_bar = fig.add_axes([
+            heatmap_pos.x0,
+            heatmap_pos.y1 + gap_rel,
+            heatmap_pos.width,
+            bar_height_rel,
+        ])
+        ax_labels = fig.add_axes([
+            heatmap_pos.x0,
+            heatmap_pos.y1 + gap_rel + bar_height_rel + gap_rel,
+            heatmap_pos.width,
+            label_height_rel,
+        ])
+        rgba_row = np.array([mpl.colors.to_rgba(c) for c in col_colors], dtype=float).reshape(1, len(col_colors), 4)
+        ax_bar.imshow(rgba_row, aspect="auto", interpolation="none")
+        ax_bar.set_xticks([])
+        ax_bar.set_yticks([])
+        for spine in ax_bar.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(0.8)
+            spine.set_color("white")
+        for i in range(1, len(col_colors)):
+            ax_bar.axvline(i - 0.5, color="white", linewidth=1)
+        ax_labels.set_xticks([])
+        ax_labels.set_yticks([])
+        ax_labels.set_frame_on(False)
+        ax_labels.set_xlim(-0.5, H.shape[1] - 0.5)
+        ax_bar.set_xlim(-0.5, H.shape[1] - 0.5)
+        for x_pos, group in sample_centers:
+            ax_labels.text(
+                x_pos,
+                0.0,
+                str(group),
+                ha="center",
+                va="bottom",
+                fontsize=max(style["tick_size"] - 1, 8),
+                fontweight="semibold",
+            )
+        fig.suptitle("All detected features by lipid class", fontsize=style["title_size"], fontweight="bold", y=0.985)
+        png_path = save_dir / f"{basename}.png"
+        svg_path = save_dir / f"{basename}.svg"
+        order_csv = save_dir / f"{basename}_feature_order.csv"
+        feature_order_df.drop(columns=["_class_sort", "_annotation_sort", "_uid_sort"]).to_csv(order_csv, index=False, encoding="utf-8-sig")
+        _safe_savefig(fig, png_path, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.2)
+        _safe_savefig(fig, svg_path, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.2)
+        plt.close(fig)
+
 def _plot_heatmap(
     X_scaled: pd.DataFrame,
     y_groups: pd.Series,
@@ -321,7 +668,9 @@ def _plot_heatmap(
     basename: str,
     group_colors=None,
     group_order=None,
+    style: Optional[dict] = None,
 ):
+    style = style or get_figure_style(False, 100)
 
     """
     Create clustered heatmap for the top_k features from 'feature_ids_sorted'.
@@ -343,9 +692,6 @@ def _plot_heatmap(
     for patch in legend_handles:
         patch.set_edgecolor("white")
 
-    # Dynamic figure sizing
-    fig_w, fig_h = _dynamic_figsize(n_features=H.shape[0], n_samples=H.shape[1])
-
     # ==========================================================
     # Annotation mapping (robust, like VIP code)
     # ==========================================================
@@ -361,6 +707,10 @@ def _plot_heatmap(
     else:
         annotations = [str(uid) for uid in Xsel.columns]
 
+    # Dynamic figure sizing
+    fig_w, fig_h = _dynamic_figsize(n_features=H.shape[0], n_samples=H.shape[1])
+    annot_fig_w = fig_w + _annotation_width_boost(annotations)
+
     # ==========================================================
     # 1) Annotated version (Annotation names on Y-axis)
     # ==========================================================
@@ -369,9 +719,9 @@ def _plot_heatmap(
     
     cg_annot = sns.clustermap(
         H_annot,
-        cmap="coolwarm",
+        cmap=style["diverging_cmap"],
         linewidths=0.4,
-        figsize=(fig_w, fig_h),
+        figsize=(annot_fig_w, fig_h),
         row_cluster=True,
         col_cluster=True,
         col_colors=col_colors,  # group color bar
@@ -379,7 +729,7 @@ def _plot_heatmap(
         metric="euclidean",
         dendrogram_ratio=(0.08, 0.08),     # side, top dendograms
         cbar_kws={"shrink": 0.5, "label": "\nStandardized\nValues"},
-        cbar_pos=(1.04, 0.1, 0.03, 0.3),
+        cbar_pos=(1.24, 0.1, 0.03, 0.3),
     )
 
     # --- Fix top colorbar (group bar) height ---
@@ -522,20 +872,20 @@ def _plot_heatmap(
     #---------------------------------------------------------------------------------------------
 
     # Add titles
-    cg_annot.ax_heatmap.set_xlabel("Samples (Groups)", fontsize=14, labelpad=12)
+    cg_annot.ax_heatmap.set_xlabel("Samples", fontsize=style["label_size"], labelpad=12)
     cg_annot.ax_heatmap.set_ylabel("", fontsize=14, labelpad=12)
     
     if top_k <=5:
-        cg_annot.fig.suptitle(f"Clustered Heatmap (Top {top_k} Lipids by ANOVA-FDR)", fontsize=14, weight="bold", y=1.08)
+        cg_annot.fig.suptitle(f"Clustered Heatmap (Top {top_k} by Kruskal-FDR)", fontsize=style["title_size"], weight="bold", y=1.08)
     elif top_k <=15:
-        cg_annot.fig.suptitle(f"Clustered Heatmap (Top {top_k} Lipids by ANOVA-FDR)", fontsize=14, weight="bold", y=1.04)
+        cg_annot.fig.suptitle(f"Clustered Heatmap (Top {top_k} by Kruskal-FDR)", fontsize=style["title_size"], weight="bold", y=1.04)
     elif top_k <=25:
-        cg_annot.fig.suptitle(f"Clustered Heatmap (Top {top_k} Lipids by ANOVA-FDR)", fontsize=14, weight="bold", y=1.02)
+        cg_annot.fig.suptitle(f"Clustered Heatmap (Top {top_k} by Kruskal-FDR)", fontsize=style["title_size"], weight="bold", y=1.02)
     elif top_k >25:
-        cg_annot.fig.suptitle(f"Clustered Heatmap (Top {top_k} Lipids by ANOVA-FDR)", fontsize=14, weight="bold", y=1.005)
+        cg_annot.fig.suptitle(f"Clustered Heatmap (Top {top_k} by Kruskal-FDR)", fontsize=style["title_size"], weight="bold", y=1.005)
         
-    plt.setp(cg_annot.ax_heatmap.get_xticklabels(), rotation=55, ha="right", fontsize=11)
-    plt.setp(cg_annot.ax_heatmap.get_yticklabels(), rotation=0, ha="left", fontsize=10)
+    plt.setp(cg_annot.ax_heatmap.get_xticklabels(), rotation=55, ha="right", fontsize=style["tick_size"])
+    plt.setp(cg_annot.ax_heatmap.get_yticklabels(), rotation=0, ha="left", fontsize=max(style["tick_size"] - 1, 8))
     
     # --- Ensure all annotation labels are visible (Seaborn may hide half automatically) ---
     for label in cg_annot.ax_heatmap.get_yticklabels():
@@ -550,9 +900,9 @@ def _plot_heatmap(
             cg_annot.fig.legend(
             handles=legend_handles,
             loc="upper right",
-            bbox_to_anchor=(1.32, 1.05),  # X=right of colorbar, Y=below title
-            fontsize=12,
-            title_fontsize=12,
+            bbox_to_anchor=(1.62, 1.05),  # X=right of colorbar, Y=below title
+            fontsize=style["legend_size"],
+            title_fontsize=style["legend_size"],
             frameon=False,
             ncol=ncol
             )
@@ -561,9 +911,9 @@ def _plot_heatmap(
             cg_annot.fig.legend(
             handles=legend_handles,
             loc="upper right",
-            bbox_to_anchor=(1.42, 1.05),  # X=right of colorbar, Y=below title
-            fontsize=12,
-            title_fontsize=12,
+            bbox_to_anchor=(1.78, 1.05),  # X=right of colorbar, Y=below title
+            fontsize=style["legend_size"],
+            title_fontsize=style["legend_size"],
             frameon=False,
             ncol=ncol
             )
@@ -574,9 +924,9 @@ def _plot_heatmap(
             cg_annot.fig.legend(
             handles=legend_handles,
             loc="upper right",
-            bbox_to_anchor=(1.32, 0.98),  # X=right of colorbar, Y=below title
-            fontsize=12,
-            title_fontsize=12,
+            bbox_to_anchor=(1.62, 0.98),  # X=right of colorbar, Y=below title
+            fontsize=style["legend_size"],
+            title_fontsize=style["legend_size"],
             frameon=False,
             ncol=ncol
             )
@@ -585,9 +935,9 @@ def _plot_heatmap(
             cg_annot.fig.legend(
             handles=legend_handles,
             loc="upper right",
-            bbox_to_anchor=(1.42, 0.98),  # X=right of colorbar, Y=below title
-            fontsize=12,
-            title_fontsize=12,
+            bbox_to_anchor=(1.78, 0.98),  # X=right of colorbar, Y=below title
+            fontsize=style["legend_size"],
+            title_fontsize=style["legend_size"],
             frameon=False,
             ncol=ncol
             )
@@ -598,9 +948,9 @@ def _plot_heatmap(
             cg_annot.fig.legend(
             handles=legend_handles,
             loc="upper right",
-            bbox_to_anchor=(1.32, 0.9),  # X=right of colorbar, Y=below title
-            fontsize=12,
-            title_fontsize=12,
+            bbox_to_anchor=(1.62, 0.9),  # X=right of colorbar, Y=below title
+            fontsize=style["legend_size"],
+            title_fontsize=style["legend_size"],
             frameon=False,
             ncol=ncol
             )
@@ -609,16 +959,19 @@ def _plot_heatmap(
             cg_annot.fig.legend(
             handles=legend_handles,
             loc="upper right",
-            bbox_to_anchor=(1.42, 0.9),  # X=right of colorbar, Y=below title
-            fontsize=12,
-            title_fontsize=12,
+            bbox_to_anchor=(1.78, 0.9),  # X=right of colorbar, Y=below title
+            fontsize=style["legend_size"],
+            title_fontsize=style["legend_size"],
             frameon=False,
             ncol=ncol
             )
 
-    plt.savefig(save_dir / f"{basename}_top{top_k}_annotated.png", dpi=100, bbox_inches="tight", pad_inches=0.2)
-    plt.savefig(save_dir / f"{basename}_top{top_k}_annotated.svg", dpi=100, bbox_inches="tight", pad_inches=0.2)
-    plt.close()
+    annot_png = save_dir / f"{basename}_t{top_k}_ann.png"
+    annot_svg = save_dir / f"{basename}_t{top_k}_ann.svg"
+
+    _safe_savefig(cg_annot.fig, annot_png, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.2)
+    _safe_savefig(cg_annot.fig, annot_svg, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.2)
+    plt.close(cg_annot.fig)
 
 
 
@@ -630,7 +983,7 @@ def _plot_heatmap(
 
     cg_uid = sns.clustermap(
         H_uid,
-        cmap="coolwarm",
+        cmap=style["diverging_cmap"],
         linewidths=0.4,
         figsize=(fig_w, fig_h),
         row_cluster=True,
@@ -640,7 +993,7 @@ def _plot_heatmap(
         metric="euclidean",
         dendrogram_ratio=(0.10, 0.10),
         cbar_kws={"shrink": 0.5, "label": "\nStandardized\nValues"},
-        cbar_pos=(1.04, 0.1, 0.03, 0.3),
+        cbar_pos=(1.24, 0.1, 0.03, 0.3),
     )
     
     # --- Fix top colorbar (group bar) height ---
@@ -788,19 +1141,19 @@ def _plot_heatmap(
     ax_top = cg_uid.ax_col_colors
         
     # Add titles
-    cg_uid.ax_heatmap.set_xlabel("Samples (Groups)", fontsize=14, labelpad=12)
+    cg_uid.ax_heatmap.set_xlabel("Samples", fontsize=style["label_size"], labelpad=12)
     cg_uid.ax_heatmap.set_ylabel("", fontsize=14, labelpad=12)
     if top_k <=5:
-        cg_uid.fig.suptitle(f"Clustered Heatmap (Top {top_k} Lipids by ANOVA-FDR)", fontsize=14, weight="bold", y=1.08)
+        cg_uid.fig.suptitle(f"Clustered Heatmap (Top {top_k} by Kruskal-FDR)", fontsize=style["title_size"], weight="bold", y=1.08)
     elif top_k <=15:
-        cg_uid.fig.suptitle(f"Clustered Heatmap (Top {top_k} Lipids by ANOVA-FDR)", fontsize=14, weight="bold", y=1.04)
+        cg_uid.fig.suptitle(f"Clustered Heatmap (Top {top_k} by Kruskal-FDR)", fontsize=style["title_size"], weight="bold", y=1.04)
     elif top_k <=25:
-        cg_uid.fig.suptitle(f"Clustered Heatmap (Top {top_k} Lipids by ANOVA-FDR)", fontsize=14, weight="bold", y=1.02)
+        cg_uid.fig.suptitle(f"Clustered Heatmap (Top {top_k} by Kruskal-FDR)", fontsize=style["title_size"], weight="bold", y=1.02)
     elif top_k >25:
-        cg_uid.fig.suptitle(f"Clustered Heatmap (Top {top_k} Lipids by ANOVA-FDR)", fontsize=14, weight="bold", y=1.005)
+        cg_uid.fig.suptitle(f"Clustered Heatmap (Top {top_k} by Kruskal-FDR)", fontsize=style["title_size"], weight="bold", y=1.005)
           
-    plt.setp(cg_uid.ax_heatmap.get_xticklabels(), rotation=55, ha="right", fontsize=11)
-    plt.setp(cg_uid.ax_heatmap.get_yticklabels(), rotation=0, ha="left", fontsize=10)
+    plt.setp(cg_uid.ax_heatmap.get_xticklabels(), rotation=55, ha="right", fontsize=style["tick_size"])
+    plt.setp(cg_uid.ax_heatmap.get_yticklabels(), rotation=0, ha="left", fontsize=max(style["tick_size"] - 1, 8))
     
     # Attach legend to the full figure — top center, above title
     n_groups = len(legend_handles)
@@ -813,9 +1166,9 @@ def _plot_heatmap(
             cg_uid.fig.legend(
             handles=legend_handles,
             loc="upper right",
-            bbox_to_anchor=(1.32, 1.05),  # X=right of colorbar, Y=below title
-            fontsize=12,
-            title_fontsize=12,
+            bbox_to_anchor=(1.62, 1.05),  # X=right of colorbar, Y=below title
+            fontsize=style["legend_size"],
+            title_fontsize=style["legend_size"],
             frameon=False,
             ncol=ncol
             )
@@ -824,9 +1177,9 @@ def _plot_heatmap(
             cg_uid.fig.legend(
             handles=legend_handles,
             loc="upper right",
-            bbox_to_anchor=(1.42, 1.05),  # X=right of colorbar, Y=below title
-            fontsize=12,
-            title_fontsize=12,
+            bbox_to_anchor=(1.78, 1.05),  # X=right of colorbar, Y=below title
+            fontsize=style["legend_size"],
+            title_fontsize=style["legend_size"],
             frameon=False,
             ncol=ncol
             )
@@ -837,9 +1190,9 @@ def _plot_heatmap(
             cg_uid.fig.legend(
             handles=legend_handles,
             loc="upper right",
-            bbox_to_anchor=(1.32, 0.98),  # X=right of colorbar, Y=below title
-            fontsize=12,
-            title_fontsize=12,
+            bbox_to_anchor=(1.62, 0.98),  # X=right of colorbar, Y=below title
+            fontsize=style["legend_size"],
+            title_fontsize=style["legend_size"],
             frameon=False,
             ncol=ncol
             )
@@ -848,9 +1201,9 @@ def _plot_heatmap(
             cg_uid.fig.legend(
             handles=legend_handles,
             loc="upper right",
-            bbox_to_anchor=(1.42, 0.98),  # X=right of colorbar, Y=below title
-            fontsize=12,
-            title_fontsize=12,
+            bbox_to_anchor=(1.78, 0.98),  # X=right of colorbar, Y=below title
+            fontsize=style["legend_size"],
+            title_fontsize=style["legend_size"],
             frameon=False,
             ncol=ncol
             )
@@ -861,9 +1214,9 @@ def _plot_heatmap(
             cg_uid.fig.legend(
             handles=legend_handles,
             loc="upper right",
-            bbox_to_anchor=(1.32, 0.9),  # X=right of colorbar, Y=below title
-            fontsize=12,
-            title_fontsize=12,
+            bbox_to_anchor=(1.62, 0.9),  # X=right of colorbar, Y=below title
+            fontsize=style["legend_size"],
+            title_fontsize=style["legend_size"],
             frameon=False,
             ncol=ncol
             )
@@ -872,16 +1225,19 @@ def _plot_heatmap(
             cg_uid.fig.legend(
             handles=legend_handles,
             loc="upper right",
-            bbox_to_anchor=(1.42, 0.9),  # X=right of colorbar, Y=below title
-            fontsize=12,
-            title_fontsize=12,
+            bbox_to_anchor=(1.78, 0.9),  # X=right of colorbar, Y=below title
+            fontsize=style["legend_size"],
+            title_fontsize=style["legend_size"],
             frameon=False,
             ncol=ncol
             )
     
-    plt.savefig(save_dir / f"{basename}_top{top_k}_uniqueIDs.png", dpi=100, bbox_inches="tight", pad_inches=0.2)
-    plt.savefig(save_dir / f"{basename}_top{top_k}_uniqueIDs.svg", dpi=100, bbox_inches="tight", pad_inches=0.2)
-    plt.close()
+    uid_png = save_dir / f"{basename}_t{top_k}_uid.png"
+    uid_svg = save_dir / f"{basename}_t{top_k}_uid.svg"
+
+    _safe_savefig(cg_uid.fig, uid_png, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.2)
+    _safe_savefig(cg_uid.fig, uid_svg, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.2)
+    plt.close(cg_uid.fig)
 
 def _generate_all_heatmaps(
     X: pd.DataFrame,
@@ -899,12 +1255,15 @@ def _generate_all_heatmaps(
     per_carbon_heatmaps: bool = True,
     carbon_agg: str = "sum",
     min_features_per_carbon_bin: int = 3,
+    all_features_unclustered_by_class: bool = True,
+    style: Optional[dict] = None,
 ):
+    style = style or get_figure_style(False, 100)
 
     """
     Common routine to:
       - autoscale X
-      - rank features via ANOVA + FDR
+      - rank features via Kruskal-Wallis + FDR
       - plot top N heatmaps at preset cutoffs
     suffix_label is appended to output filenames/folders (e.g., "", or "Without_outliers")
     """
@@ -918,8 +1277,8 @@ def _generate_all_heatmaps(
     X_scaled = _autoscale_df(X, out_dir, "autoscaled_data.csv")
 
     # Rank features
-    anova_df = _anova_rank_features(X_scaled, y_groups, out_dir, "ANOVA_results.csv")
-    ranked_features = anova_df["Feature"].tolist()
+    rank_df = _kruskal_rank_features(X_scaled, y_groups, out_dir, "Kruskal_results.csv")
+    ranked_features = rank_df["Feature"].tolist()
 
     global_cutoffs = [50, 40, 30, 25, 20, 15, 10, 5]
     class_cutoffs  = [20, 15, 10, 5]
@@ -937,6 +1296,19 @@ def _generate_all_heatmaps(
             basename="Heatmap",
             group_colors=group_colors,
             group_order=group_order,
+            style=style,
+        )
+
+    if all_features_unclustered_by_class:
+        _plot_all_features_by_class_heatmap(
+            X_scaled=X_scaled,
+            y_groups=y_groups,
+            feature_meta=feature_meta,
+            save_dir=out_dir,
+            basename="Heatmap_all_features_unclustered_by_class",
+            group_colors=group_colors,
+            group_order=group_order,
+            style=style,
         )
 
     # ---------------------------------------------------------
@@ -963,14 +1335,14 @@ def _generate_all_heatmaps(
             if len(uids) < min_features_per_class:
                 continue
 
-            class_dir = _ensure_dir(out_dir / "Per_class" / _sanitize_filename(cls))
+            class_dir = _ensure_dir(out_dir / "Class" / _sanitize_filename(cls))
 
             X_cls = X.loc[:, uids].copy()
 
             # Autoscale and rank within the class
             X_scaled_cls = _autoscale_df(X_cls, class_dir, "autoscaled_data.csv")
-            anova_df_cls = _anova_rank_features(X_scaled_cls, y_groups, class_dir, "ANOVA_results.csv")
-            ranked_cls = anova_df_cls["Feature"].tolist()
+            rank_df_cls = _kruskal_rank_features(X_scaled_cls, y_groups, class_dir, "Kruskal_results.csv")
+            ranked_cls = rank_df_cls["Feature"].tolist()
 
             # Use smaller cutoffs so small classes still plot
             max_k = min(len(ranked_cls), 50)
@@ -986,9 +1358,10 @@ def _generate_all_heatmaps(
                     feature_meta=feature_meta,
                     top_k=kk,
                     save_dir=class_dir,
-                    basename=f"Heatmap_{_sanitize_filename(cls)}",
+                    basename=f"HM_{_sanitize_filename(cls)}",
                     group_colors=group_colors,
                     group_order=group_order,
+                    style=style,
                 )
 
             print(f"[Heatmap] Per-class heatmaps written: {cls} ({len(uids)} features)", flush=True)
@@ -1017,12 +1390,12 @@ def _generate_all_heatmaps(
                 if len(uids) < min_features_per_category:
                     continue
 
-                cat_dir = _ensure_dir(out_dir / "Per_category" / _sanitize_filename(cat))
+                cat_dir = _ensure_dir(out_dir / "Cat" / _sanitize_filename(cat))
                 X_cat = X.loc[:, uids].copy()
 
                 X_scaled_cat = _autoscale_df(X_cat, cat_dir, "autoscaled_data.csv")
-                anova_df_cat = _anova_rank_features(X_scaled_cat, y_groups, cat_dir, "ANOVA_results.csv")
-                ranked_cat = anova_df_cat["Feature"].tolist()
+                rank_df_cat = _kruskal_rank_features(X_scaled_cat, y_groups, cat_dir, "Kruskal_results.csv")
+                ranked_cat = rank_df_cat["Feature"].tolist()
 
                 max_k = len(ranked_cat)
                 cutoffs = [kk for kk in cat_cutoffs if kk <= max_k]
@@ -1037,9 +1410,10 @@ def _generate_all_heatmaps(
                         feature_meta=feature_meta,
                         top_k=kk,
                         save_dir=cat_dir,
-                        basename=f"Heatmap_{_sanitize_filename(cat)}",
+                        basename=f"HM_{_sanitize_filename(cat)}",
                         group_colors=group_colors,
                         group_order=group_order,
+                        style=style,
                     )
 
                 print(f"[Heatmap] Per-category heatmaps written: {cat} ({len(uids)} features)", flush=True)
@@ -1062,10 +1436,10 @@ def _generate_all_heatmaps(
             if X_carb.empty or X_carb.shape[1] < 2:
                 print("[Heatmap] Not enough carbon bins to plot; skipping per-carbon heatmaps.", flush=True)
             else:
-                carb_dir = _ensure_dir(out_dir / "Per_carbons")
+                carb_dir = _ensure_dir(out_dir / "C")
                 X_scaled_carb = _autoscale_df(X_carb, carb_dir, "autoscaled_data.csv")
-                anova_df_carb = _anova_rank_features(X_scaled_carb, y_groups, carb_dir, "ANOVA_results.csv")
-                ranked_bins = anova_df_carb["Feature"].tolist()
+                rank_df_carb = _kruskal_rank_features(X_scaled_carb, y_groups, carb_dir, "Kruskal_results.csv")
+                ranked_bins = rank_df_carb["Feature"].tolist()
 
                 # Plot only 20/10/5 style cutoffs, but bins might be fewer
                 for k in [20, 15, 10, 5]:
@@ -1079,9 +1453,10 @@ def _generate_all_heatmaps(
                         feature_meta=feature_meta,   # not used for labels here, but fine
                         top_k=kk,
                         save_dir=carb_dir,
-                        basename=f"Heatmap_Carbons_{carbon_agg}",
+                        basename=f"HM_C_{carbon_agg}",
                         group_colors=group_colors,
                         group_order=group_order,
+                        style=style,
                     )
 
                 print(f"[Heatmap] Per-carbon heatmaps written: {X_carb.shape[1]} bins (agg={carbon_agg})", flush=True)
@@ -1089,7 +1464,7 @@ def _generate_all_heatmaps(
 # ==========================================================
 # Public entry point (called by the GUI)
 # ==========================================================
-def run_heatmap(file_path, group_file, save_dir, group_colors=None, group_order=None):
+def run_heatmap(file_path, group_file, save_dir, group_colors=None, group_order=None, dpi=100, publication_theme: bool = False):
     """
     Main entry used by StatisticsPage.
       - file_path: path to statistics/Final_Annotated*.csv variant
@@ -1098,6 +1473,7 @@ def run_heatmap(file_path, group_file, save_dir, group_colors=None, group_order=
     """
     file_path = Path(file_path)
     save_dir = prepare_output_dir(Path(save_dir))
+    style = get_figure_style(publication_theme=publication_theme, dpi=dpi)
 
     print('[Heatmaps] Running heatmaps...', flush = True)
     print(f"[Heatmap] Starting for: {file_path.name}", flush = True)
@@ -1113,7 +1489,7 @@ def run_heatmap(file_path, group_file, save_dir, group_colors=None, group_order=
         print("[Heatmap] No data found — skipping.", flush = True)
         return
     if y.nunique() < 2:
-        print("[Heatmap] Only one group detected — clustering will run, ANOVA becomes neutral.", flush = True)
+        print("[Heatmap] Only one group detected — clustering will run, Kruskal ranking becomes neutral.", flush = True)
     print(f"[Heatmap] Data: {X.shape[0]} samples × {X.shape[1]} features, groups={y.nunique()}", flush = True)
 
     # ---------- Standard (all features) ----------
@@ -1131,6 +1507,7 @@ def run_heatmap(file_path, group_file, save_dir, group_colors=None, group_order=
         per_carbon_heatmaps=True,
         carbon_agg="sum",                 # or "mean"
         min_features_per_carbon_bin=3,
+        style=style,
     )
 
     # ---------- Without Outliers ----------
@@ -1159,9 +1536,120 @@ def run_heatmap(file_path, group_file, save_dir, group_colors=None, group_order=
         per_carbon_heatmaps=True,
         carbon_agg="sum",                 # or "mean"
         min_features_per_carbon_bin=3,
+        style=style,
     )
 
     print(f"[Heatmap] Completed. Output in: {save_dir}\n", flush = True)
+
+
+def run_selected_lipid_heatmap(
+    file_path,
+    group_file,
+    save_dir,
+    selected_annotations: Optional[List[str]] = None,
+    group_colors=None,
+    group_order=None,
+    dpi=100,
+    publication_theme: bool = False,
+):
+    file_path = Path(file_path)
+    save_dir = prepare_output_dir(Path(save_dir))
+    style = get_figure_style(publication_theme=publication_theme, dpi=dpi)
+    selected_annotations = [str(x).strip() for x in (selected_annotations or []) if str(x).strip()]
+    if not selected_annotations:
+        raise ValueError("No annotations were selected for the heatmap.")
+
+    print("[Selected Heatmap] Running selected lipid heatmap...", flush=True)
+    X, y, feature_meta = load_dataset(file_path, group_file)
+    if X.empty or feature_meta.empty:
+        raise ValueError("Dataset appears empty or malformed.")
+
+    if "UniqueID" not in feature_meta.columns:
+        raise ValueError("Feature metadata is missing 'UniqueID'.")
+
+    ann_col = None
+    for c in feature_meta.columns:
+        if str(c).strip().lower() == "annotation":
+            ann_col = c
+            break
+    if ann_col is None:
+        raise ValueError("Feature metadata is missing 'Annotation'.")
+
+    feature_meta = feature_meta.copy()
+    feature_meta["UniqueID"] = feature_meta["UniqueID"].astype(str).str.strip()
+    feature_meta[ann_col] = feature_meta[ann_col].astype(str).str.strip()
+
+    uid_to_annotation = feature_meta.drop_duplicates("UniqueID").set_index("UniqueID")[ann_col].to_dict()
+    annotation_to_uids: dict[str, list[str]] = {}
+    for uid in X.columns.astype(str):
+        ann = str(uid_to_annotation.get(str(uid).strip(), "")).strip()
+        if ann:
+            annotation_to_uids.setdefault(ann, []).append(str(uid).strip())
+
+    X_ordered, y_ordered = _order_samples_by_group(X, y, group_order=group_order)
+
+    rows = []
+    found_annotations = []
+    missing_annotations = []
+    for annotation in selected_annotations:
+        uids = [uid for uid in annotation_to_uids.get(annotation, []) if uid in X_ordered.columns]
+        if not uids:
+            missing_annotations.append(annotation)
+            continue
+        signal = X_ordered.loc[:, uids].sum(axis=1)
+        rows.append(signal.rename(annotation))
+        found_annotations.append(annotation)
+
+    if not rows:
+        raise ValueError("None of the selected annotations were found in the dataset.")
+
+    heatmap_df = pd.DataFrame(rows)
+    heatmap_df.index = found_annotations
+    heatmap_df.columns = X_ordered.index.astype(str)
+
+    scaler = StandardScaler()
+    scaled = pd.DataFrame(
+        scaler.fit_transform(heatmap_df.T).T,
+        index=heatmap_df.index,
+        columns=heatmap_df.columns,
+    )
+
+    out_dir = prepare_output_dir(save_dir / "Selected_Lipid_Heatmap")
+    raw_csv = out_dir / "selected_lipids_raw_abundance.csv"
+    scaled_csv = out_dir / "selected_lipids_autoscaled.csv"
+    missing_csv = out_dir / "selected_lipids_missing_annotations.csv"
+    sample_order_csv = out_dir / "sample_order.csv"
+    selected_csv = out_dir / "selected_annotations_order.csv"
+
+    heatmap_df.to_csv(raw_csv, encoding="utf-8-sig")
+    scaled.to_csv(scaled_csv, encoding="utf-8-sig")
+    pd.DataFrame({"Annotation": selected_annotations, "Found": [a in found_annotations for a in selected_annotations]}).to_csv(selected_csv, index=False, encoding="utf-8-sig")
+    pd.DataFrame({"Sample": X_ordered.index.astype(str), "Group": y_ordered.astype(str).values}).to_csv(sample_order_csv, index=False, encoding="utf-8-sig")
+    pd.DataFrame({"MissingAnnotation": missing_annotations}).to_csv(missing_csv, index=False, encoding="utf-8-sig")
+
+    png_path = out_dir / "selected_lipid_heatmap.png"
+    svg_path = out_dir / "selected_lipid_heatmap.svg"
+    _plot_selected_lipid_heatmap(
+        scaled,
+        y_ordered,
+        png_path,
+        svg_path,
+        group_colors=group_colors,
+        group_order=group_order,
+        style=style,
+    )
+
+    print(f"[Selected Heatmap] Completed. Output in: {out_dir}", flush=True)
+    return {
+        "out_dir": str(out_dir),
+        "raw_csv": str(raw_csv),
+        "scaled_csv": str(scaled_csv),
+        "selected_annotations_csv": str(selected_csv),
+        "sample_order_csv": str(sample_order_csv),
+        "missing_annotations_csv": str(missing_csv),
+        "heatmap_png": str(png_path),
+        "heatmap_svg": str(svg_path),
+    }
 
 
 # Optional local test

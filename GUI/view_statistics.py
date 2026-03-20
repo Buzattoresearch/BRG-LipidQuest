@@ -1,6 +1,7 @@
 # GUI/view_statistics.py
 from __future__ import annotations
 import tkinter as tk
+import numpy as np
 from tkinter import ttk, messagebox, filedialog, colorchooser
 from pathlib import Path
 from typing import Optional
@@ -15,7 +16,11 @@ import json
 # analysis functions
 from Stats.pca_analysis import run_pca
 from Stats.plsda_analysis import run_plsda
-from Stats.heatmap_analysis import run_heatmap
+from Stats.heatmap_analysis import (
+    get_available_annotations as get_available_heatmap_annotations,
+    run_heatmap,
+    run_selected_lipid_heatmap,
+)
 from Stats.volcano_analysis import run_volcano
 from Stats.boxplots import run_boxplots
 from Stats.violinplots import run_violinplots
@@ -24,6 +29,15 @@ from Stats.class_distributions import run_from_stats as run_class_distributions
 from Stats.summed_intensity_per_class import run_from_stats as run_class_sums
 from Stats.class_violin_boxplots import run_from_stats as run_class_violin_box
 from Stats.class_number_carbons_DB import run_from_stats as run_class_carbons_db
+from Stats.enrichment_analysis import run_from_stats as run_enrichment_analysis
+from Stats.ratio_analysis import (
+    DEFAULT_CLASS_RATIO_DEFS,
+    DEFAULT_PRODUCT_RATIO_DEFS,
+    get_available_annotation_labels,
+    run_from_stats as run_ratio_analysis,
+)
+from Stats.upset_plot import run_from_stats as run_upset_plot
+from Stats.advanced_differential_analysis import run_from_stats as run_advanced_differential_analysis
 
 matplotlib.rcParams["figure.max_open_warning"] = 0  # suppress "too many open figures" warnings
 
@@ -87,21 +101,31 @@ class StatisticsPage(tk.Toplevel):
         # --- single-run guard + HARD STOP support ---
         self._is_running = False
         self._run_lock = threading.Lock()
-        self._worker_thread: threading.Thread | None = None  # handle to kill immediately
+        self._worker_thread = None  # handle to kill immediately
 
         # Volcano threshold variables (defaults)
         self.var_fc  = tk.StringVar(value="1.5")
-        self.var_fdr = tk.StringVar(value="0.10")
+        self.var_fdr = tk.StringVar(value="0.05")
         self.var_p   = tk.StringVar(value="0.05")
+        self.var_dpi = tk.StringVar(value="100")
+        self.var_publication_theme = tk.BooleanVar(value=False)
+        self.var_volcano_labels = tk.BooleanVar(value=False)
+        self.var_ratio_settings_summary = tk.StringVar(value="Default ratio settings")
+        self.var_selected_heatmap_summary = tk.StringVar(value="Selected heatmap: no lipids selected")
 
-        # Dataset selector state (exactly these 3 options)
+        # Dataset selector state
         self.var_dataset = tk.StringVar(value="Annotated (normalized and merged)")
+        self.ratio_settings = self._default_ratio_settings()
+        self._load_ratio_settings()
+        self.selected_heatmap_annotations: list[str] = []
+        self._load_selected_heatmap_settings()
 
         # Try to reuse styles
         self._configure_local_style_if_needed()
 
         # --- Load data (for summary only) ---
         self.df_annotated = None
+        self.df_annotated_semi = None
         self.df_unknowns = None
         self.df_before_norm = None
         self.df_groups = None
@@ -149,20 +173,44 @@ class StatisticsPage(tk.Toplevel):
         ttk.Button(right_btns, text="Colors…", width=14, command=self.open_color_dialog).pack(side="right", padx=(8, 0))
         ttk.Button(right_btns, text="Select groups & output…", width=24, command=self.open_group_dialog).pack(side="right")
 
-        # === Volcano thresholds (user-configurable) ===
-        th = tk.Frame(self.main_frame, bg="white")
-        th.pack(fill="x", padx=24, pady=(6, 6))
+        # === Analysis configuration ===
+        config = tk.Frame(self.main_frame, bg="white")
+        config.pack(fill="x", padx=24, pady=(6, 8))
+        config.grid_columnconfigure(0, weight=1)
+        config.grid_columnconfigure(1, weight=1)
 
-        ttk.Label(th, text="\nVolcano thresholds", style="Section.TLabel").grid(row=0, column=0, columnspan=6, sticky="w", pady=(0, 6))
+        volcano_panel = ttk.LabelFrame(config, text="Volcano Analysis")
+        volcano_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        volcano_panel.grid_columnconfigure(1, weight=1)
+        volcano_panel.grid_columnconfigure(3, weight=1)
 
-        ttk.Label(th, text="Fold-change (FC ≥)", style="Body.TLabel").grid(row=1, column=0, sticky="e", padx=(0, 6))
-        fc_entry = ttk.Entry(th, textvariable=self.var_fc, width=8); fc_entry.grid(row=1, column=1, sticky="w")
+        ttk.Label(volcano_panel, text="Fold-change (FC ≥)", style="Body.TLabel").grid(row=0, column=0, sticky="e", padx=(8, 6), pady=(8, 4))
+        fc_entry = ttk.Entry(volcano_panel, textvariable=self.var_fc, width=10)
+        fc_entry.grid(row=0, column=1, sticky="w", pady=(8, 4))
 
-        ttk.Label(th, text="FDR p <", style="Body.TLabel").grid(row=1, column=2, sticky="e", padx=(16, 6))
-        fdr_entry = ttk.Entry(th, textvariable=self.var_fdr, width=8); fdr_entry.grid(row=1, column=3, sticky="w")
+        ttk.Label(volcano_panel, text="FDR p <", style="Body.TLabel").grid(row=0, column=2, sticky="e", padx=(12, 6), pady=(8, 4))
+        fdr_entry = ttk.Entry(volcano_panel, textvariable=self.var_fdr, width=10)
+        fdr_entry.grid(row=0, column=3, sticky="w", pady=(8, 4))
 
-        ttk.Label(th, text="raw p <", style="Body.TLabel").grid(row=1, column=4, sticky="e", padx=(16, 6))
-        p_entry = ttk.Entry(th, textvariable=self.var_p, width=8); p_entry.grid(row=1, column=5, sticky="w")
+        ttk.Label(volcano_panel, text="raw p <", style="Body.TLabel").grid(row=1, column=0, sticky="e", padx=(8, 6), pady=(4, 4))
+        p_entry = ttk.Entry(volcano_panel, textvariable=self.var_p, width=10)
+        p_entry.grid(row=1, column=1, sticky="w", pady=(4, 4))
+
+        ttk.Checkbutton(volcano_panel, text="Volcano labels", variable=self.var_volcano_labels).grid(
+            row=1, column=2, columnspan=2, sticky="w", padx=(12, 0), pady=(4, 4)
+        )
+
+        self.volcano_button = ttk.Button(volcano_panel, text="Run Volcano Plot", width=22, command=self.run_volcano)
+        self.volcano_button.grid(row=2, column=0, columnspan=4, sticky="w", padx=8, pady=(8, 10))
+
+        figure_panel = ttk.LabelFrame(config, text="Figure Style")
+        figure_panel.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        ttk.Label(figure_panel, text="Figure DPI", style="Body.TLabel").grid(row=0, column=0, sticky="e", padx=(8, 6), pady=(8, 4))
+        dpi_combo = ttk.Combobox(figure_panel, textvariable=self.var_dpi, state="readonly", width=8, values=["100", "150", "200", "300", "600"])
+        dpi_combo.grid(row=0, column=1, sticky="w", pady=(8, 4))
+        ttk.Checkbutton(figure_panel, text="Publication theme", variable=self.var_publication_theme).grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 10)
+        )
 
         def _sanitize_thresholds(_evt=None):
             fc, fdr, p = self._get_volcano_thresholds()
@@ -170,20 +218,25 @@ class StatisticsPage(tk.Toplevel):
         for e in (fc_entry, fdr_entry, p_entry):
             e.bind("<FocusOut>", _sanitize_thresholds)
 
-        # === Dataset selector (3 options) ===
+        # === Dataset selector ===
         ds = tk.Frame(self.main_frame, bg="white")
         ds.pack(fill="x", padx=24, pady=(8, 6))
         ttk.Label(ds, text="\nDataset selection", style="Section.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
         ttk.Label(ds, text="Dataset:", style="Body.TLabel").grid(row=1, column=0, sticky="e", padx=(0, 6))
         ds_combo = ttk.Combobox(
-            ds, textvariable=self.var_dataset, state="readonly", width=32,
+            ds, textvariable=self.var_dataset, state="readonly", width=60,
             values=[
                 "Annotated (normalized and merged)",
+                "Annotated (with missing values)",
+                "Annotated semi-quant (normalized and merged)",
+                "Annotated semi-quant (with missing values)",
                 "Annotated (pre-normalization, merged)",
                 "Unknowns (normalized and merged)",
                 "Annotated (POS only)",
+                "Annotated semi-quant (POS only)",
                 "Unknowns (POS only)",
                 "Annotated (NEG only)",
+                "Annotated semi-quant (NEG only)",
                 "Unknowns (NEG only)",
             ]
         )
@@ -192,52 +245,94 @@ class StatisticsPage(tk.Toplevel):
         # === Tools ===
         tools = tk.Frame(self.main_frame, bg="white")
         tools.pack(pady=(10, 28), padx=24, fill="x")
+        tools.grid_columnconfigure(0, weight=1)
+        tools.grid_columnconfigure(1, weight=1)
 
-        ttk.Label(tools, text="\nAvailable Statistical Tools", style="Section.TLabel").grid(row=0, column=0, columnspan=5, pady=(0, 12), sticky="w")
+        ttk.Label(tools, text="Analysis Tools", style="Section.TLabel").grid(row=0, column=0, columnspan=2, pady=(0, 10), sticky="w")
 
-        self.pca_button      = ttk.Button(tools, text="Run PCA", width=25, command=self.run_pca)
-        self.plsda_button    = ttk.Button(tools, text="Run PLS-DA", width=25, command=self.run_plsda)
-        self.heatmap_button  = ttk.Button(tools, text="Run Clustered Heatmap", width=25, command=self.run_heatmap)
-        self.volcano_button  = ttk.Button(tools, text="Run Volcano", width=25, command=self.run_volcano)
-        self.boxplots_button = ttk.Button(tools, text="Run Boxplots", width=25, command=self.run_boxplots)
-        self.violin_button   = ttk.Button(tools, text="Run Violin Plots", width=25, command=self.run_violin)
-        self.correlations_button = ttk.Button(tools, text="Run Correlations", width=25, command=self.run_correlation_analysis)
-        self.classdist_button = ttk.Button(tools, text="Run Class Distributions", width=25, command=self.run_class_distributions)
-        self.summint_button   = ttk.Button(tools, text="Run Summed Int. per Class", width=25, command=self.run_class_sums)
-        self.classviolinbox_button   = ttk.Button(tools, text="Run Class Violin+Boxplots", width=25, command=self.run_class_violin_box)
-        self.classcarbons_button     = ttk.Button(tools, text="Run Class Carbon Stacked Bars", width=25, command=self.run_class_carbons_db)
+        action_row = tk.Frame(tools, bg="white")
+        action_row.grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
-               
-        # RUN ALL (cooperative cancel)
-        self.runall_button   = ttk.Button(tools, text="RUN ALL", width=25, command=self.run_all)
-        self.runall_button.grid(row=1, column=0, padx=8, pady=6)
-        
-        # STOP button (cooperative cancel)
-        self.stop_button = ttk.Button(tools, text="⛔ STOP NOW", width=14, command=self.hard_stop_now)
+        self.runall_button = ttk.Button(action_row, text="RUN ALL", width=22, command=self.run_all)
+        self.runall_button.pack(side="left")
+
+        self.stop_button = ttk.Button(action_row, text="⛔ STOP NOW", width=14, command=self.hard_stop_now)
         self.stop_button.state(["disabled"])
-        self.stop_button.grid(row=1, column=1, padx=8, pady=6, sticky="w")
-        
-        ttk.Label(tools, text="\n", style="Section.TLabel").grid(row=2, column=0, columnspan=5, pady=(0, 12), sticky="w")
-        
-        self.pca_button.grid(row=3, column=0, padx=8, pady=6)
-        self.plsda_button.grid(row=3, column=1, padx=8, pady=6)
-        self.heatmap_button.grid(row=3, column=2, padx=8, pady=6)
-        self.volcano_button.grid(row=3, column=3, padx=8, pady=6)
-        self.boxplots_button.grid(row=4, column=0, padx=8, pady=6)
-        self.violin_button.grid(row=4, column=1, padx=8, pady=6)
-        self.correlations_button.grid(row=4, column=2, padx=8, pady=6)
-        self.classdist_button.grid(row=5, column=0, padx=8, pady=6)
-        self.summint_button.grid(row=5, column=1, padx=8, pady=6)
-        self.classviolinbox_button.grid(row=5, column=2, padx=8, pady=6)
-        self.classcarbons_button.grid(row=5, column=3, padx=8, pady=6)
+        self.stop_button.pack(side="left", padx=(10, 0))
+
+        multivariate_panel = ttk.LabelFrame(tools, text="Multivariate Analysis")
+        multivariate_panel.grid(row=2, column=0, sticky="nsew", padx=(0, 8), pady=(0, 10))
+        multivariate_panel.grid_columnconfigure(0, weight=1)
+        multivariate_panel.grid_columnconfigure(1, weight=1)
+        self.pca_button = ttk.Button(multivariate_panel, text="Run PCA", width=25, command=self.run_pca)
+        self.plsda_button = ttk.Button(multivariate_panel, text="Run PLS-DA", width=25, command=self.run_plsda)
+        self.heatmap_button = ttk.Button(multivariate_panel, text="Run Clustered Heatmap", width=25, command=self.run_heatmap)
+        self.correlations_button = ttk.Button(multivariate_panel, text="Run Correlations", width=25, command=self.run_correlation_analysis)
+        self.selected_heatmap_button = ttk.Button(multivariate_panel, text="Run Selected Lipid Heatmap", width=25, command=self.run_selected_heatmap)
+        self.selected_heatmap_settings_button = ttk.Button(multivariate_panel, text="Select lipids for heatmap...", width=25, command=self.open_selected_heatmap_dialog)
+        self.pca_button.grid(row=0, column=0, padx=8, pady=(8, 6), sticky="w")
+        self.plsda_button.grid(row=0, column=1, padx=8, pady=(8, 6), sticky="w")
+        self.heatmap_button.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="w")
+        self.correlations_button.grid(row=1, column=1, padx=8, pady=(0, 8), sticky="w")
+        self.selected_heatmap_button.grid(row=2, column=0, padx=8, pady=(0, 6), sticky="w")
+        self.selected_heatmap_settings_button.grid(row=2, column=1, padx=8, pady=(0, 6), sticky="w")
+        ttk.Label(multivariate_panel, textvariable=self.var_selected_heatmap_summary, style="Subtle.TLabel").grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8)
+        )
+
+        univariate_panel = ttk.LabelFrame(tools, text="Univariate Analysis")
+        univariate_panel.grid(row=2, column=1, sticky="nsew", padx=(8, 0), pady=(0, 10))
+        univariate_panel.grid_columnconfigure(0, weight=1)
+        univariate_panel.grid_columnconfigure(1, weight=1)
+        self.boxplots_button = ttk.Button(univariate_panel, text="Run Boxplots", width=25, command=self.run_boxplots)
+        self.violin_button = ttk.Button(univariate_panel, text="Run Violin Plots", width=25, command=self.run_violin)
+        self.enrichment_button = ttk.Button(univariate_panel, text="Run Enrichment", width=25, command=self.run_enrichment_analysis)
+        self.upset_button = ttk.Button(univariate_panel, text="Run UpSet Plot", width=25, command=self.run_upset)
+        self.advanceddiff_button = ttk.Button(univariate_panel, text="Run Advanced Differential", width=25, command=self.run_advanced_differential)
+        self.boxplots_button.grid(row=0, column=0, padx=8, pady=(8, 6), sticky="w")
+        self.violin_button.grid(row=0, column=1, padx=8, pady=(8, 6), sticky="w")
+        self.enrichment_button.grid(row=1, column=0, padx=8, pady=(0, 6), sticky="w")
+        self.upset_button.grid(row=1, column=1, padx=8, pady=(0, 6), sticky="w")
+        self.advanceddiff_button.grid(row=2, column=0, padx=8, pady=(0, 8), sticky="w")
+
+        distributions_panel = ttk.LabelFrame(tools, text="Distributions")
+        distributions_panel.grid(row=3, column=0, sticky="nsew", padx=(0, 8), pady=(0, 10))
+        distributions_panel.grid_columnconfigure(0, weight=1)
+        distributions_panel.grid_columnconfigure(1, weight=1)
+        self.classdist_button = ttk.Button(distributions_panel, text="Run Class Distributions", width=25, command=self.run_class_distributions)
+        self.summint_button = ttk.Button(distributions_panel, text="Run Summed Int. per Class", width=25, command=self.run_class_sums)
+        self.classviolinbox_button = ttk.Button(distributions_panel, text="Run Class Violin+Boxplots", width=25, command=self.run_class_violin_box)
+        self.classcarbons_button = ttk.Button(distributions_panel, text="Run Carbon# DB", width=25, command=self.run_class_carbons_db)
+        self.classdist_button.grid(row=0, column=0, padx=8, pady=(8, 6), sticky="w")
+        self.summint_button.grid(row=0, column=1, padx=8, pady=(8, 6), sticky="w")
+        self.classviolinbox_button.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="w")
+        self.classcarbons_button.grid(row=1, column=1, padx=8, pady=(0, 8), sticky="w")
+
+        ratio_panel = ttk.LabelFrame(tools, text="Ratio Analysis")
+        ratio_panel.grid(row=3, column=1, sticky="nsew", padx=(8, 0), pady=(0, 10))
+        ratio_panel.grid_columnconfigure(0, weight=1)
+        ratio_panel.grid_columnconfigure(1, weight=1)
+        self.ratio_button = ttk.Button(ratio_panel, text="Run Ratio Analysis", width=25, command=self.run_ratio_analysis)
+        self.ratio_settings_button = ttk.Button(ratio_panel, text="Ratio settings...", width=25, command=self.open_ratio_settings_dialog)
+        ttk.Label(
+            ratio_panel,
+            text="Choose class ratios and annotation-specific ratios here before running.",
+            style="Subtle.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 6))
+        self.ratio_button.grid(row=1, column=0, padx=8, pady=(0, 6), sticky="w")
+        self.ratio_settings_button.grid(row=1, column=1, padx=8, pady=(0, 6), sticky="w")
+        ttk.Label(ratio_panel, textvariable=self.var_ratio_settings_summary, style="Subtle.TLabel").grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8)
+        )
         
         # Auto-prepare on first open
         self.after(200, self._auto_prepare_or_warn)
 
         # Disable buttons if required files are missing
         if self.missing_files:
-            for btn in (self.pca_button, self.plsda_button, self.heatmap_button, self.volcano_button, self.boxplots_button, self.violin_button,
-                self.correlations_button, self.classdist_button, self.summint_button, self.classviolinbox_button, self.classcarbons_button):
+            for btn in (self.pca_button, self.plsda_button, self.heatmap_button, self.selected_heatmap_button, self.selected_heatmap_settings_button, self.volcano_button, self.boxplots_button, self.violin_button,
+                self.correlations_button, self.classdist_button, self.summint_button, self.classviolinbox_button, self.classcarbons_button,
+                self.enrichment_button, self.ratio_button, self.ratio_settings_button, self.upset_button, self.advanceddiff_button):
                 btn.config(state="disabled")
             self._add_tooltip(tools, f"Missing files: {', '.join(self.missing_files)}")
 
@@ -327,6 +422,438 @@ class StatisticsPage(tk.Toplevel):
         dlg.update_idletasks(); dlg.geometry(f"+{self.winfo_rootx()+120}+{self.winfo_rooty()+120}")
 
     # ==========================================================
+    # RATIO SETTINGS
+    # ==========================================================
+    def _ratio_settings_path(self) -> Path:
+        return self._get_stats_dir() / "ratio_settings.json"
+
+    def _default_ratio_settings(self) -> dict:
+        return {
+            "include_selected_class_ratios": True,
+            "include_selected_product_ratios": True,
+            "include_structural_class_ratios": True,
+            "include_global_structural_ratios": True,
+            "selected_class_ratios": [
+                {"numerator": num, "denominator": den, "ratio_name": name, "category": "Class ratios"}
+                for num, den, name in DEFAULT_CLASS_RATIO_DEFS
+            ],
+            "selected_product_ratios": [
+                {"numerator": num, "denominator": den, "ratio_name": name, "category": "Product/substrate-like ratios"}
+                for num, den, name in DEFAULT_PRODUCT_RATIO_DEFS
+            ],
+            "annotation_ratios": [],
+        }
+
+    def _normalize_ratio_settings(self, settings: Optional[dict] = None) -> dict:
+        src = dict(self._default_ratio_settings())
+        if isinstance(settings, dict):
+            src.update(settings)
+
+        def _normalize_defs(items, default_category):
+            out = []
+            seen = set()
+            for item in items or []:
+                if not isinstance(item, dict):
+                    continue
+                numerator = str(item.get("numerator", "")).strip()
+                denominator = str(item.get("denominator", "")).strip()
+                ratio_name = str(item.get("ratio_name", "")).strip() or f"{numerator}/{denominator}"
+                category = str(item.get("category", "")).strip() or default_category
+                if not numerator or not denominator or not ratio_name:
+                    continue
+                key = (numerator.casefold(), denominator.casefold(), ratio_name.casefold(), category.casefold())
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({
+                    "numerator": numerator,
+                    "denominator": denominator,
+                    "ratio_name": ratio_name,
+                    "category": category,
+                })
+            return out
+
+        normalized = {
+            "include_selected_class_ratios": bool(src.get("include_selected_class_ratios", True)),
+            "include_selected_product_ratios": bool(src.get("include_selected_product_ratios", True)),
+            "include_structural_class_ratios": bool(src.get("include_structural_class_ratios", True)),
+            "include_global_structural_ratios": bool(src.get("include_global_structural_ratios", True)),
+            "selected_class_ratios": _normalize_defs(src.get("selected_class_ratios", []), "Class ratios"),
+            "selected_product_ratios": _normalize_defs(src.get("selected_product_ratios", []), "Product/substrate-like ratios"),
+            "annotation_ratios": _normalize_defs(src.get("annotation_ratios", []), "Annotation-specific ratios"),
+        }
+        return normalized
+
+    def _load_ratio_settings(self):
+        p = self._ratio_settings_path()
+        if p.exists():
+            try:
+                self.ratio_settings = self._normalize_ratio_settings(json.loads(p.read_text(encoding="utf-8")))
+            except Exception:
+                self.ratio_settings = self._default_ratio_settings()
+        else:
+            self.ratio_settings = self._default_ratio_settings()
+        self._update_ratio_settings_summary()
+
+    def _save_ratio_settings(self):
+        self.ratio_settings = self._normalize_ratio_settings(self.ratio_settings)
+        self._update_ratio_settings_summary()
+        try:
+            self._ratio_settings_path().write_text(json.dumps(self.ratio_settings, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _update_ratio_settings_summary(self):
+        rs = self._normalize_ratio_settings(getattr(self, "ratio_settings", None))
+        parts = []
+        if rs["include_selected_class_ratios"]:
+            parts.append(f"{len(rs['selected_class_ratios'])} class")
+        if rs["include_selected_product_ratios"]:
+            parts.append(f"{len(rs['selected_product_ratios'])} product")
+        if rs["annotation_ratios"]:
+            parts.append(f"{len(rs['annotation_ratios'])} annotation")
+        if rs["include_structural_class_ratios"]:
+            parts.append("class-structural")
+        if rs["include_global_structural_ratios"]:
+            parts.append("global-structural")
+        self.var_ratio_settings_summary.set("Ratio settings: " + (", ".join(parts) if parts else "none selected"))
+
+    def _get_ratio_settings(self) -> dict:
+        return self._normalize_ratio_settings(getattr(self, "ratio_settings", None))
+
+    def _candidate_ratio_dataset_paths(self) -> list[Path]:
+        stats_dir = self._get_stats_dir()
+        paths: list[Path] = []
+        try:
+            dataset_iter = self._datasets_for_selection()
+        except Exception:
+            return []
+        for fname, label in dataset_iter:
+            label_upper = str(label).upper()
+            is_no_qc_label = ("WITHOUT_QCS" in label_upper or "NO_QCS" in label_upper)
+            if not is_no_qc_label:
+                continue
+            fpath = stats_dir / fname
+            if fpath.exists():
+                paths.append(fpath)
+        return paths
+
+    def _enable_annotation_typeahead(self, combo: ttk.Combobox, all_values: list[str]):
+        values = list(all_values or [])
+        combo.configure(values=values)
+
+        def _apply_matches(matches: list[str], typed: str):
+            combo.configure(values=matches if matches else values)
+            if matches:
+                first = matches[0]
+                if typed and first.casefold().startswith(typed.casefold()):
+                    combo.set(first)
+                    combo.selection_range(len(typed), tk.END)
+                    combo.icursor(len(typed))
+
+        def _filter_matches(_event=None):
+            typed = combo.get().strip()
+            if not typed:
+                combo.configure(values=values)
+                return
+            starts = [item for item in values if item.casefold().startswith(typed.casefold())]
+            contains = [item for item in values if typed.casefold() in item.casefold() and item not in starts]
+            _apply_matches(starts + contains[:200], typed)
+
+        def _reset_values(_event=None):
+            if not combo.get().strip():
+                combo.configure(values=values)
+
+        combo.bind("<KeyRelease>", _filter_matches, add="+")
+        combo.bind("<Button-1>", _reset_values, add="+")
+        combo.bind("<FocusIn>", _reset_values, add="+")
+
+    def _selected_heatmap_settings_path(self) -> Path:
+        return self._get_stats_dir() / "selected_heatmap_annotations.json"
+
+    def _update_selected_heatmap_summary(self):
+        count = len(getattr(self, "selected_heatmap_annotations", []))
+        if count == 0:
+            text = "Selected heatmap: no lipids selected"
+        else:
+            text = f"Selected heatmap: {count} lipid{'s' if count != 1 else ''} selected"
+        self.var_selected_heatmap_summary.set(text)
+
+    def _load_selected_heatmap_settings(self):
+        p = self._selected_heatmap_settings_path()
+        items: list[str] = []
+        if p.exists():
+            try:
+                payload = json.loads(p.read_text(encoding="utf-8"))
+                items = [str(x).strip() for x in payload.get("selected_annotations", []) if str(x).strip()]
+            except Exception:
+                items = []
+        self.selected_heatmap_annotations = items
+        self._update_selected_heatmap_summary()
+
+    def _save_selected_heatmap_settings(self):
+        cleaned = [str(x).strip() for x in getattr(self, "selected_heatmap_annotations", []) if str(x).strip()]
+        self.selected_heatmap_annotations = cleaned
+        self._update_selected_heatmap_summary()
+        try:
+            self._selected_heatmap_settings_path().write_text(
+                json.dumps({"selected_annotations": cleaned}, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def open_selected_heatmap_dialog(self):
+        dataset_paths = self._candidate_ratio_dataset_paths()
+        annotation_values = get_available_heatmap_annotations(str(dataset_paths[0])) if dataset_paths else []
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Selected lipid heatmap")
+        dlg.configure(bg="white")
+        dlg.transient(self)
+        dlg.grab_set()
+
+        frame = tk.Frame(dlg, bg="white")
+        frame.pack(fill="both", expand=True, padx=14, pady=12)
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(3, weight=1)
+
+        ttk.Label(frame, text="Choose lipids for the unclustered heatmap", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        helper_text = "Type to jump to matching annotations; the selected order becomes the heatmap row order."
+        ttk.Label(frame, text=helper_text, style="Subtle.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 8))
+
+        controls = tk.Frame(frame, bg="white")
+        controls.grid(row=2, column=0, sticky="ew")
+        controls.grid_columnconfigure(1, weight=1)
+
+        ann_var = tk.StringVar()
+        ttk.Label(controls, text="Lipid annotation", style="Body.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ann_combo = ttk.Combobox(controls, textvariable=ann_var, values=annotation_values, width=60)
+        ann_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        self._enable_annotation_typeahead(ann_combo, annotation_values)
+
+        selected_tree = ttk.Treeview(frame, columns=("annotation",), show="headings", height=10)
+        selected_tree.heading("annotation", text="Selected lipids in heatmap order")
+        selected_tree.column("annotation", width=520, anchor="w")
+        selected_tree.grid(row=3, column=0, sticky="nsew", pady=(8, 0))
+
+        selected_rows = [str(x).strip() for x in self.selected_heatmap_annotations if str(x).strip()]
+
+        def _refresh_tree():
+            selected_tree.delete(*selected_tree.get_children(""))
+            for idx, item in enumerate(selected_rows):
+                selected_tree.insert("", "end", iid=str(idx), values=(item,))
+
+        _refresh_tree()
+
+        def _add_selected():
+            annotation = ann_var.get().strip()
+            if not annotation:
+                return
+            selected_rows.append(annotation)
+            _refresh_tree()
+            ann_var.set("")
+
+        def _remove_selected():
+            selected = selected_tree.selection()
+            if not selected:
+                return
+            remove_ids = {int(item_id) for item_id in selected}
+            selected_rows[:] = [row for idx, row in enumerate(selected_rows) if idx not in remove_ids]
+            _refresh_tree()
+
+        def _move_selected(delta: int):
+            selected = selected_tree.selection()
+            if len(selected) != 1:
+                return
+            idx = int(selected[0])
+            new_idx = idx + delta
+            if new_idx < 0 or new_idx >= len(selected_rows):
+                return
+            selected_rows[idx], selected_rows[new_idx] = selected_rows[new_idx], selected_rows[idx]
+            _refresh_tree()
+            selected_tree.selection_set(str(new_idx))
+
+        btns = tk.Frame(frame, bg="white")
+        btns.grid(row=4, column=0, sticky="w", pady=(8, 0))
+        ttk.Button(btns, text="Add lipid", width=12, command=_add_selected).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Remove", width=12, command=_remove_selected).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Move up", width=12, command=lambda: _move_selected(-1)).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Move down", width=12, command=lambda: _move_selected(1)).pack(side="left")
+
+        actions = tk.Frame(frame, bg="white")
+        actions.grid(row=5, column=0, sticky="e", pady=(12, 0))
+
+        def _save_and_close():
+            self.selected_heatmap_annotations = [str(x).strip() for x in selected_rows if str(x).strip()]
+            self._save_selected_heatmap_settings()
+            dlg.destroy()
+
+        ttk.Button(actions, text="Save", width=12, command=_save_and_close).pack(side="left", padx=4)
+        ttk.Button(actions, text="Cancel", width=12, command=dlg.destroy).pack(side="left", padx=4)
+
+        dlg.update_idletasks()
+        dlg.geometry(f"+{self.winfo_rootx()+110}+{self.winfo_rooty()+90}")
+
+    def open_ratio_settings_dialog(self):
+        settings = self._get_ratio_settings()
+        dataset_paths = self._candidate_ratio_dataset_paths()
+        annotation_values = get_available_annotation_labels(str(dataset_paths[0])) if dataset_paths else []
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Ratio settings")
+        dlg.configure(bg="white")
+        dlg.transient(self)
+        dlg.grab_set()
+
+        frame = tk.Frame(dlg, bg="white")
+        frame.pack(fill="both", expand=True, padx=14, pady=12)
+
+        ttk.Label(frame, text="Predefined ratios", style="Section.TLabel").grid(row=0, column=0, columnspan=4, sticky="w")
+
+        include_class_var = tk.BooleanVar(value=settings["include_selected_class_ratios"])
+        include_product_var = tk.BooleanVar(value=settings["include_selected_product_ratios"])
+        include_structural_var = tk.BooleanVar(value=settings["include_structural_class_ratios"])
+        include_global_var = tk.BooleanVar(value=settings["include_global_structural_ratios"])
+
+        ttk.Checkbutton(frame, text="Include selected class ratios", variable=include_class_var).grid(row=1, column=0, sticky="w", pady=(6, 2))
+        ttk.Checkbutton(frame, text="Include selected product/substrate ratios", variable=include_product_var).grid(row=1, column=1, sticky="w", pady=(6, 2), padx=(16, 0))
+        ttk.Checkbutton(frame, text="Include within-class structural ratios", variable=include_structural_var).grid(row=2, column=0, sticky="w", pady=(2, 8))
+        ttk.Checkbutton(frame, text="Include global structural ratios", variable=include_global_var).grid(row=2, column=1, sticky="w", pady=(2, 8), padx=(16, 0))
+
+        class_defs = [
+            {"numerator": num, "denominator": den, "ratio_name": name, "category": "Class ratios"}
+            for num, den, name in DEFAULT_CLASS_RATIO_DEFS
+        ]
+        product_defs = [
+            {"numerator": num, "denominator": den, "ratio_name": name, "category": "Product/substrate-like ratios"}
+            for num, den, name in DEFAULT_PRODUCT_RATIO_DEFS
+        ]
+        selected_class_names = {item["ratio_name"] for item in settings["selected_class_ratios"]}
+        selected_product_names = {item["ratio_name"] for item in settings["selected_product_ratios"]}
+
+        class_box = ttk.LabelFrame(frame, text="Class ratios")
+        class_box.grid(row=3, column=0, sticky="nsew", padx=(0, 8))
+        product_box = ttk.LabelFrame(frame, text="Product/substrate-like ratios")
+        product_box.grid(row=3, column=1, sticky="nsew", padx=(8, 0))
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_columnconfigure(1, weight=1)
+
+        class_ratio_vars = {}
+        for idx, item in enumerate(class_defs):
+            var = tk.BooleanVar(value=item["ratio_name"] in selected_class_names)
+            class_ratio_vars[item["ratio_name"]] = var
+            ttk.Checkbutton(class_box, text=item["ratio_name"], variable=var).grid(row=idx, column=0, sticky="w", padx=8, pady=2)
+
+        product_ratio_vars = {}
+        for idx, item in enumerate(product_defs):
+            var = tk.BooleanVar(value=item["ratio_name"] in selected_product_names)
+            product_ratio_vars[item["ratio_name"]] = var
+            ttk.Checkbutton(product_box, text=item["ratio_name"], variable=var).grid(row=idx, column=0, sticky="w", padx=8, pady=2)
+
+        ttk.Label(frame, text="Annotation-specific ratios", style="Section.TLabel").grid(row=4, column=0, columnspan=4, sticky="w", pady=(12, 4))
+        helper_text = "Choose from the current no-QC dataset" if annotation_values else "No prepared no-QC dataset found yet; manual entry still works"
+        ttk.Label(frame, text=helper_text, style="Subtle.TLabel").grid(row=5, column=0, columnspan=4, sticky="w", pady=(0, 6))
+
+        ann_controls = tk.Frame(frame, bg="white")
+        ann_controls.grid(row=6, column=0, columnspan=2, sticky="ew")
+        ann_controls.grid_columnconfigure(1, weight=1)
+        ann_controls.grid_columnconfigure(3, weight=1)
+
+        ann_num_var = tk.StringVar()
+        ann_den_var = tk.StringVar()
+        ann_name_var = tk.StringVar()
+
+        ttk.Label(ann_controls, text="Numerator", style="Body.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        num_combo = ttk.Combobox(ann_controls, textvariable=ann_num_var, values=annotation_values, width=42)
+        num_combo.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        ttk.Label(ann_controls, text="Denominator", style="Body.TLabel").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        den_combo = ttk.Combobox(ann_controls, textvariable=ann_den_var, values=annotation_values, width=42)
+        den_combo.grid(row=0, column=3, sticky="ew")
+        self._enable_annotation_typeahead(num_combo, annotation_values)
+        self._enable_annotation_typeahead(den_combo, annotation_values)
+        ttk.Label(ann_controls, text="Label", style="Body.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=(8, 0))
+        ttk.Entry(ann_controls, textvariable=ann_name_var, width=42).grid(row=1, column=1, sticky="ew", pady=(8, 0))
+
+        ann_tree = ttk.Treeview(frame, columns=("ratio", "numerator", "denominator"), show="headings", height=7)
+        ann_tree.heading("ratio", text="Ratio")
+        ann_tree.heading("numerator", text="Numerator")
+        ann_tree.heading("denominator", text="Denominator")
+        ann_tree.column("ratio", width=220, anchor="w")
+        ann_tree.column("numerator", width=260, anchor="w")
+        ann_tree.column("denominator", width=260, anchor="w")
+        ann_tree.grid(row=7, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        frame.grid_rowconfigure(7, weight=1)
+
+        annotation_rows = []
+
+        def _refresh_annotation_tree():
+            ann_tree.delete(*ann_tree.get_children(""))
+            for idx, item in enumerate(annotation_rows):
+                ann_tree.insert("", "end", iid=str(idx), values=(item["ratio_name"], item["numerator"], item["denominator"]))
+
+        for item in settings["annotation_ratios"]:
+            annotation_rows.append({
+                "numerator": item["numerator"],
+                "denominator": item["denominator"],
+                "ratio_name": item["ratio_name"],
+                "category": "Annotation-specific ratios",
+            })
+        _refresh_annotation_tree()
+
+        def _add_annotation_ratio():
+            numerator = ann_num_var.get().strip()
+            denominator = ann_den_var.get().strip()
+            ratio_name = ann_name_var.get().strip() or f"{numerator}/{denominator}"
+            if not numerator or not denominator:
+                messagebox.showwarning("Missing annotation", "Choose both numerator and denominator annotations.", parent=dlg)
+                return
+            annotation_rows.append({
+                "numerator": numerator,
+                "denominator": denominator,
+                "ratio_name": ratio_name,
+                "category": "Annotation-specific ratios",
+            })
+            _refresh_annotation_tree()
+            ann_name_var.set("")
+
+        def _remove_annotation_ratio():
+            selected = ann_tree.selection()
+            if not selected:
+                return
+            remove_ids = {int(item_id) for item_id in selected}
+            annotation_rows[:] = [row for idx, row in enumerate(annotation_rows) if idx not in remove_ids]
+            _refresh_annotation_tree()
+
+        btn_row = tk.Frame(frame, bg="white")
+        btn_row.grid(row=8, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(btn_row, text="Add annotation ratio", command=_add_annotation_ratio, width=22).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_row, text="Remove selected", command=_remove_annotation_ratio, width=16).pack(side="left")
+
+        def _save_and_close():
+            selected_class = [item for item in class_defs if class_ratio_vars[item["ratio_name"]].get()]
+            selected_product = [item for item in product_defs if product_ratio_vars[item["ratio_name"]].get()]
+            self.ratio_settings = self._normalize_ratio_settings({
+                "include_selected_class_ratios": include_class_var.get(),
+                "include_selected_product_ratios": include_product_var.get(),
+                "include_structural_class_ratios": include_structural_var.get(),
+                "include_global_structural_ratios": include_global_var.get(),
+                "selected_class_ratios": selected_class,
+                "selected_product_ratios": selected_product,
+                "annotation_ratios": annotation_rows,
+            })
+            self._save_ratio_settings()
+            dlg.destroy()
+
+        action_row = tk.Frame(frame, bg="white")
+        action_row.grid(row=9, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ttk.Button(action_row, text="Save", command=_save_and_close, width=12).pack(side="left", padx=4)
+        ttk.Button(action_row, text="Cancel", command=dlg.destroy, width=12).pack(side="left", padx=4)
+
+        dlg.update_idletasks()
+        dlg.geometry(f"+{self.winfo_rootx()+100}+{self.winfo_rooty()+80}")
+
+    # ==========================================================
     # DATA LOADING (for summary + guardrails)
     # ==========================================================
     def _load_data_files(self):
@@ -335,12 +862,15 @@ class StatisticsPage(tk.Toplevel):
         # ALL FEATURES
         candidates = {
             "Final_Annotated.csv": [
-                # merged polarity
                 self.output_folder / "Final_Annotated.csv",
-
-                # polarity-specific
                 self.output_folder / "POS" / "Pos_Final_Annotated.csv",
                 self.output_folder / "NEG" / "Neg_Final_Annotated.csv",
+            ],
+
+            "Final_Annotated_semi_quant.csv": [
+                self.output_folder / "Final_Annotated_semi_quant.csv",
+                self.output_folder / "POS" / "Pos_Final_Annotated_semi_quant.csv",
+                self.output_folder / "NEG" / "Neg_Final_Annotated_semi_quant.csv",
             ],
 
             "Final_Unknowns.csv": [
@@ -363,6 +893,7 @@ class StatisticsPage(tk.Toplevel):
         }
         mapping = {
             "Final_Annotated.csv": "df_annotated",
+            "Final_Annotated_semi_quant.csv": "df_annotated_semi",
             "Final_Unknowns.csv": "df_unknowns",
             "Final_Annotated_Before_Normalization.csv": "df_before_norm",
             "sample_groups.csv": "df_groups",
@@ -379,7 +910,7 @@ class StatisticsPage(tk.Toplevel):
                         print(f'\nLoaded the file {p}.', flush = True)
                         break
                     except Exception as e:
-                        messagebox.showwarning("File Error", f"Failed to read {p.name}:\n{e}", flush = True)
+                        messagebox.showwarning("File Error", f"Failed to read {p.name}:\n{e}")
             if not loaded:
                 missing.append(logical_name)
         # Only Annotated and groups are mandatory to start; others optional
@@ -390,10 +921,12 @@ class StatisticsPage(tk.Toplevel):
             return (f"⚠ Some required files are missing:\n  - {', '.join(self.missing_files)}\n\n"
                     f"Please run the processing pipeline completely before proceeding.")
         n_ann = len(self.df_annotated) if getattr(self, "df_annotated", None) is not None else 0
+        n_ann_semi = len(self.df_annotated_semi) if getattr(self, "df_annotated_semi", None) is not None else 0
         n_unk = len(self.df_unknowns) if getattr(self, "df_unknowns", None) is not None else 0
         n_bfn = len(self.df_before_norm) if getattr(self, "df_before_norm", None) is not None else 0
         n_grp = len(self.df_groups) if getattr(self, "df_groups", None) is not None else 0
         return (f"Loaded {n_ann} annotated compounds\n"
+                f"Loaded {n_ann_semi} annotated semi-quant compounds\n"
                 f"Loaded {n_unk} unknown features\n"
                 f"Loaded {n_bfn} rows from Before-Normalization file\n"
                 f"Loaded {n_grp} sample group assignments")
@@ -414,12 +947,33 @@ class StatisticsPage(tk.Toplevel):
             "Final_Annotated_Without_QCs.csv",
             "Final_Annotated_HighConf.csv",
             "Final_Annotated_Without_QCs_HighConf.csv",
+
+            # Annotated semi-quant
+            "Final_Annotated_semi_quant.csv",
+            "Final_Annotated_semi_quant_Without_QCs.csv",
+            "Final_Annotated_semi_quant_HighConf.csv",
+            "Final_Annotated_semi_quant_Without_QCs_HighConf.csv",
+            
+            # Annotated with missing
+            "Final_Annotated_with_missing.csv",
+            "Final_Annotated_with_missing_Without_QCs.csv",
+            "Final_Annotated_with_missing_HighConf.csv",
+            "Final_Annotated_with_missing_Without_QCs_HighConf.csv",
+
+            # Annotated semi-quant with missing
+            "Final_Annotated_semi_quant_with_missing.csv",
+            "Final_Annotated_semi_quant_with_missing_Without_QCs.csv",
+            "Final_Annotated_semi_quant_with_missing_HighConf.csv",
+            "Final_Annotated_semi_quant_with_missing_Without_QCs_HighConf.csv",
+
             # Unknowns
             "Final_Unknowns.csv",
             "Final_Unknowns_Without_QCs.csv",
+
             # Before-Norm
             "Final_Annotated_BeforeNorm.csv",
             "Final_Annotated_BeforeNorm_Without_QCs.csv",
+
             # Groups
             "sample_groups_cleaned.csv",
         ]
@@ -442,6 +996,16 @@ class StatisticsPage(tk.Toplevel):
                 self._load_palette()
             except Exception:
                 pass
+            try:
+                self._load_ratio_settings()
+            except Exception:
+                self.ratio_settings = self._default_ratio_settings()
+                self._update_ratio_settings_summary()
+            try:
+                self._load_selected_heatmap_settings()
+            except Exception:
+                self.selected_heatmap_annotations = []
+                self._update_selected_heatmap_summary()
             self.group_order = dlg.group_order
 
             self.prepare_statistical_datasets(
@@ -517,6 +1081,14 @@ class StatisticsPage(tk.Toplevel):
         p   = min(max(p,   eps), 1.0)
         return fc, fdr, p
 
+    def _get_figure_options(self):
+        try:
+            dpi = int(str(self.var_dpi.get()).strip())
+        except Exception:
+            dpi = 100
+        dpi = max(72, min(dpi, 1200))
+        return dpi, bool(self.var_publication_theme.get())
+
     # ==========================================================
     # AUTO-PREP
     # ==========================================================
@@ -537,13 +1109,14 @@ class StatisticsPage(tk.Toplevel):
     # ==========================================================
     def _all_analysis_buttons(self):
         return (
-            self.pca_button, self.plsda_button, self.heatmap_button,
+            self.pca_button, self.plsda_button, self.heatmap_button, self.selected_heatmap_button, self.selected_heatmap_settings_button,
             self.volcano_button, self.boxplots_button, self.violin_button,
             self.correlations_button, self.classdist_button, self.summint_button, self.classviolinbox_button,
-            self.classcarbons_button
+            self.classcarbons_button, self.enrichment_button, self.ratio_button, self.ratio_settings_button, self.upset_button,
+            self.advanceddiff_button,
         )
 
-    def _set_busy(self, busy: bool, label: str | None = None):
+    def _set_busy(self, busy: bool, label: Optional[str] = None):
         state = "disabled" if busy else "normal"
         for btn in self._all_analysis_buttons(): btn.config(state=state)
         try: self.prepare_btn.config(state=state)
@@ -662,6 +1235,21 @@ class StatisticsPage(tk.Toplevel):
         self._worker_thread = threading.Thread(target=self._run_analysis, args=("Heatmap",), daemon=True, name="LQ-StatsWorker-Heatmap")
         self._worker_thread.start()
 
+    def run_selected_heatmap(self):
+        if self._is_running:
+            self._toast("Another analysis is already running")
+            return
+        if not self.selected_heatmap_annotations:
+            self._toast("Choose lipids for the selected heatmap first")
+            return
+        self._worker_thread = threading.Thread(
+            target=self._run_analysis,
+            args=("Selected_Heatmap",),
+            daemon=True,
+            name="LQ-StatsWorker-SelectedHeatmap",
+        )
+        self._worker_thread.start()
+
     def run_volcano(self):
         if self._is_running:
             self._toast("Another analysis is already running")
@@ -721,6 +1309,54 @@ class StatisticsPage(tk.Toplevel):
             daemon=True,
             name="LQ-StatsWorker-ClassCarbonsDB",)
         self._worker_thread.start()
+
+    def run_enrichment_analysis(self):
+        if self._is_running:
+            self._toast("Another analysis is already running")
+            return
+        self._worker_thread = threading.Thread(
+            target=self._run_analysis,
+            args=("Enrichment",),
+            daemon=True,
+            name="LQ-StatsWorker-Enrichment",
+        )
+        self._worker_thread.start()
+
+    def run_ratio_analysis(self):
+        if self._is_running:
+            self._toast("Another analysis is already running")
+            return
+        self._worker_thread = threading.Thread(
+            target=self._run_analysis,
+            args=("Ratios",),
+            daemon=True,
+            name="LQ-StatsWorker-Ratios",
+        )
+        self._worker_thread.start()
+
+    def run_upset(self):
+        if self._is_running:
+            self._toast("Another analysis is already running")
+            return
+        self._worker_thread = threading.Thread(
+            target=self._run_analysis,
+            args=("UpSet",),
+            daemon=True,
+            name="LQ-StatsWorker-UpSet",
+        )
+        self._worker_thread.start()
+
+    def run_advanced_differential(self):
+        if self._is_running:
+            self._toast("Another analysis is already running")
+            return
+        self._worker_thread = threading.Thread(
+            target=self._run_analysis,
+            args=("Advanced_Differential",),
+            daemon=True,
+            name="LQ-StatsWorker-AdvancedDifferential",
+        )
+        self._worker_thread.start()
         
     def run_all(self):
         if self._is_running:
@@ -737,7 +1373,7 @@ class StatisticsPage(tk.Toplevel):
             return
         stopped = False
         try:
-            order = ["PCA", "PLS-DA", "Heatmap", "Correlations", "Class_Distributions", "Class_Sums", "Class_violin_box", "Class_Carbons_DB", "Volcano", "Boxplots", "Violin",]
+            order = ["PCA", "PLS-DA", "Heatmap", "Selected_Heatmap", "Correlations", "Class_Distributions", "Class_Sums", "Class_violin_box", "Class_Carbons_DB", "Enrichment", "Ratios", "Advanced_Differential", "UpSet", "Volcano", "Boxplots", "Violin",]
             for at in order:
                 self._toast(f"Running {at}…")
                 self._run_analysis(at, _sequence_mode=True)
@@ -759,52 +1395,126 @@ class StatisticsPage(tk.Toplevel):
         if ds == "Annotated (normalized and merged)":
             return [
                     ("Final_Annotated.csv", "With_QCs"),
-                    ("Final_Annotated_Without_QCs.csv", "Without_QCs"),
+                    ("Final_Annotated_Without_QCs.csv", "No_QCs"),
                     ("Final_Annotated_HighConf.csv", "HighConf_With_QCs"),
-                    ("Final_Annotated_Without_QCs_HighConf.csv", "HighConf_Without_QCs"),
+                    ("Final_Annotated_Without_QCs_HighConf.csv", "HighConf_No_QCs"),
+                ]
+            
+        elif ds == "Annotated (with missing values)":
+            return [
+                    ("Final_Annotated_with_missing.csv", "Missing_With_QCs"),
+                    ("Final_Annotated_with_missing_Without_QCs.csv", "Missing_No_QCs"),
+                    ("Final_Annotated_with_missing_HighConf.csv", "Missing_HighConf_With_QCs"),
+                    ("Final_Annotated_with_missing_Without_QCs_HighConf.csv", "Missing_HighConf_No_QCs"),
+                ]
+            
+        elif ds == "Annotated semi-quant (normalized and merged)":
+            return [
+                    ("Final_Annotated_semi_quant.csv", "SemiQuant_With_QCs"),
+                    ("Final_Annotated_semi_quant_Without_QCs.csv", "SemiQuant_No_QCs"),
+                    ("Final_Annotated_semi_quant_HighConf.csv", "SemiQuant_HighConf_With_QCs"),
+                    ("Final_Annotated_semi_quant_Without_QCs_HighConf.csv", "SemiQuant_HighConf_No_QCs"),
+                ]
+            
+        elif ds == "Annotated semi-quant (with missing values)":
+            return [
+                    ("Final_Annotated_semi_quant_with_missing.csv", "Missing_SemiQuant_With_QCs"),
+                    ("Final_Annotated_semi_quant_with_missing_Without_QCs.csv", "Missing_SemiQuant_No_QCs"),
+                    ("Final_Annotated_semi_quant_with_missing_HighConf.csv", "Missing_SemiQuant_HighConf_With_QCs"),
+                    ("Final_Annotated_semi_quant_with_missing_Without_QCs_HighConf.csv", "Missing_SemiQuant_HighConf_No_QCs"),
                 ]
 
         elif ds == "Annotated (pre-normalization, merged)":
             return [
                     ("Final_Annotated_BeforeNorm.csv", "BeforeNorm_With_QCs"),
-                    ("Final_Annotated_BeforeNorm_Without_QCs.csv", "BeforeNorm_Without_QCs"),
+                    ("Final_Annotated_BeforeNorm_Without_QCs.csv", "BeforeNorm_No_QCs"),
                 ]
 
         elif ds == "Unknowns (normalized and merged)":
             return [
-                    ("Final_Unknowns.csv", "Unknowns_With_QCs"),
-                    ("Final_Unknowns_Without_QCs.csv", "Unknowns_Without_QCs"),
+                    ("Final_Unknowns.csv", "Unk_With_QCs"),
+                    ("Final_Unknowns_Without_QCs.csv", "Unk_No_QCs"),
                 ]
 
         elif ds == "Annotated (POS only)":
             return [
-                    ("POS_Final_Annotated.csv", "POS_Only"),
-                    ("POS_Final_Annotated_Without_QCs.csv", "POS_Only_Without_QCs"),
+                    ("POS_Final_Annotated.csv", "POS"),
+                    ("POS_Final_Annotated_Without_QCs.csv", "POS_No_QCs"),
+                ]
+            
+        elif ds == "Annotated semi-quant (POS only)":
+            return [
+                    ("POS_Final_Annotated_semi_quant.csv", "POS_SemiQuant"),
+                    ("POS_Final_Annotated_semi_quant_Without_QCs.csv", "POS_SemiQuant_No_QCs"),
                 ]
 
         elif ds == "Unknowns (POS only)":
             return [
-                    ("POS_Final_Unknowns.csv", "POS_Only"),
-                    ("POS_Final_Unknowns_Without_QCs.csv", "POS_Only_Without_QCs"),
+                    ("POS_Final_Unknowns.csv", "POS"),
+                    ("POS_Final_Unknowns_Without_QCs.csv", "POS_Without_QCs"),
                 ]
 
         elif ds == "Annotated (NEG only)":
             return [
-                    ("NEG_Final_Annotated.csv", "NEG_Only"),
-                    ("NEG_Final_Annotated_Without_QCs.csv", "NEG_Only_Without_QCs"),
+                    ("NEG_Final_Annotated.csv", "NEG"),
+                    ("NEG_Final_Annotated_Without_QCs.csv", "NEG_Without_QCs"),
+                ]
+        
+        elif ds == "Annotated semi-quant (NEG only)":
+            return [
+                    ("NEG_Final_Annotated_semi_quant.csv", "NEG_SemiQuant"),
+                    ("NEG_Final_Annotated_semi_quant_Without_QCs.csv", "NEG_SemiQuant_No_QCs"),
                 ]
 
         elif ds == "Unknowns (NEG only)":
             return [
-                    ("NEG_Final_Unknowns.csv", "NEG_Only"),
-                    ("NEG_Final_Unknowns_Without_QCs.csv", "NEG_Only_Without_QCs"),
+                    ("NEG_Final_Unknowns.csv", "NEG"),
+                    ("NEG_Final_Unknowns_Without_QCs.csv", "NEG_No_QCs"),
                 ]
 
         else:
             raise FileNotFoundError(f"Unsupported dataset selection: {ds}")
 
 
+    def _datasets_for_upset_selection(self) -> list[tuple[str, str]]:
+        ds = (self.var_dataset.get() or "").strip()
 
+        if ds in {"Annotated (normalized and merged)", "Annotated (with missing values)"}:
+            return [
+                ("Final_Annotated_with_missing_Without_QCs.csv", "No_QCs"),
+                ("Final_Annotated_with_missing_Without_QCs_HighConf.csv", "HighConf_No_QCs"),
+            ]
+
+        elif ds in {"Annotated semi-quant (normalized and merged)", "Annotated semi-quant (with missing values)"}:
+            return [
+                ("Final_Annotated_semi_quant_with_missing_Without_QCs.csv", "SemiQuant_No_QCs"),
+                ("Final_Annotated_semi_quant_with_missing_Without_QCs_HighConf.csv", "SemiQuant_HighConf_No_QCs"),
+            ]
+
+        elif ds == "Annotated (POS only)":
+            return [
+                ("POS_Final_Annotated_with_missing_Without_QCs.csv", "POS_No_QCs"),
+            ]
+
+        elif ds == "Annotated semi-quant (POS only)":
+            return [
+                ("POS_Final_Annotated_semi_quant_with_missing_Without_QCs.csv", "POS_SemiQuant_No_QCs"),
+            ]
+
+        elif ds == "Annotated (NEG only)":
+            return [
+                ("NEG_Final_Annotated_with_missing_Without_QCs.csv", "NEG_No_QCs"),
+            ]
+
+        elif ds == "Annotated semi-quant (NEG only)":
+            return [
+                ("NEG_Final_Annotated_semi_quant_with_missing_Without_QCs.csv", "NEG_SemiQuant_No_QCs"),
+            ]
+
+        else:
+            return []
+
+    
     def _run_analysis(self, analysis_type, _sequence_mode: bool = False):
         outer_manages = _sequence_mode
         if not outer_manages:
@@ -813,34 +1523,49 @@ class StatisticsPage(tk.Toplevel):
         try:
             stats_dir = self._get_stats_dir()
             cleaned_group_file = stats_dir / "sample_groups_cleaned.csv"
-            group_file = cleaned_group_file if cleaned_group_file.exists() else (self.output_folder / "sample_groups.csv")
+            base_group_file = cleaned_group_file if cleaned_group_file.exists() else (self.output_folder / "sample_groups.csv")
 
             if not self._stats_ready():
                 self._toast("⚠ Prepare datasets first (use the button above)")
                 return
-            if not group_file.exists():
-                group_file = None
+
+            if not base_group_file.exists():
+                base_group_file = None
 
             if not outer_manages:
                 self._toast(f"Running {analysis_type}…")
 
             plt.close("all")
             
-            for fname, label in self._datasets_for_selection():
+            dataset_iter = self._datasets_for_upset_selection() if analysis_type == "UpSet" else self._datasets_for_selection()
+            ran_any = False
+            for fname, label in dataset_iter:
 
                 fpath = stats_dir / fname
                 if not fpath.exists():
                     continue
 
                 # Tool-specific gating
-                needs_no_qc = {"PLS-DA", "Volcano", "Heatmap", "Boxplots", "Violin", "Correlations", "Class_Distributions", "Class_Sums", "Class_violin_box", "Class_Carbons_DB"}
-                if analysis_type in needs_no_qc and ("Without_QCs" not in label):
+                needs_no_qc = {"PLS-DA", "Volcano", "Heatmap", "Selected_Heatmap", "Boxplots", "Violin", "Correlations", "Class_Distributions", "Class_Sums", "Class_violin_box", "Class_Carbons_DB", "Enrichment", "Ratios", "Advanced_Differential", "UpSet"}
+                label_upper = str(label).upper()
+                is_no_qc_label = (
+                    "WITHOUT_QCS" in label_upper
+                    or "NO_QCS" in label_upper
+                )
+                if analysis_type in needs_no_qc and not is_no_qc_label:
                     continue
-                if analysis_type in {"Boxplots", "Violin"} and ("HighConf" in label):
+                if analysis_type in {"Boxplots", "Violin"} and ("HIGHCONF" in label_upper):
                     continue
-
                 subfolder = stats_dir / analysis_type / label
                 subfolder.mkdir(parents=True, exist_ok=True)
+
+                matched_group_file = None
+                if base_group_file is not None:
+                    matched_group_file = self._build_dataset_specific_group_file(
+                        dataset_path=fpath,
+                        base_group_file=base_group_file,
+                        out_dir=subfolder
+                    )
 
                 # Optional palette
                 try:
@@ -848,37 +1573,166 @@ class StatisticsPage(tk.Toplevel):
                     palette = self.group_colors or None
                 except Exception:
                     palette = None
+                figure_dpi, publication_theme = self._get_figure_options()
 
                 try:
-
+                    ran_any = True
                     if analysis_type == "PCA":
-                        run_pca(fpath, group_file, subfolder, group_colors=palette, group_order=self.group_order)
+                        run_pca(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_colors=palette,
+                            group_order=self.group_order,
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                        )
                     elif analysis_type == "PLS-DA":
-                        run_plsda(fpath, group_file, subfolder, group_colors=palette, group_order=self.group_order)
+                        run_plsda(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_colors=palette,
+                            group_order=self.group_order,
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                        )
                     elif analysis_type == "Heatmap":
-                        run_heatmap(fpath, group_file, subfolder, group_colors=palette, group_order=self.group_order)
+                        run_heatmap(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_colors=palette,
+                            group_order=self.group_order,
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                        )
+                    elif analysis_type == "Selected_Heatmap":
+                        run_selected_lipid_heatmap(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            selected_annotations=self.selected_heatmap_annotations,
+                            group_colors=palette,
+                            group_order=self.group_order,
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                        )
                     elif analysis_type == "Volcano":
                         fc, fdr, p = self._get_volcano_thresholds()
                         run_volcano(
-                            fpath, group_file, subfolder,
+                            fpath, matched_group_file, subfolder,
                             sample_type=self.sample_type,
                             p_value_threshold=p, fdr_threshold=fdr, fold_change_threshold=fc,
                             group_colors=palette, group_order=self.group_order,
+                            annotate_labels=bool(self.var_volcano_labels.get()),
+                            dpi=figure_dpi, publication_theme=publication_theme,
                         )
                     elif analysis_type == "Boxplots":
-                        run_boxplots(fpath, group_file, subfolder, group_order=self.group_order, group_colors=palette)
+                        run_boxplots(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_order=self.group_order,
+                            group_colors=palette,
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                        )
                     elif analysis_type == "Violin":
-                        run_violinplots(fpath, group_file, subfolder, group_order=self.group_order, group_colors=palette)
+                        run_violinplots(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_order=self.group_order,
+                            group_colors=palette,
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                        )
                     elif analysis_type == "Correlations":
-                        run_correlation_analysis(fpath, group_file, subfolder, group_order=self.group_order)
+                        run_correlation_analysis(fpath, matched_group_file, subfolder, group_order=self.group_order)
                     elif analysis_type == "Class_Distributions":
-                        run_class_distributions(fpath, group_file, subfolder, group_colors=palette, group_order=self.group_order, sample_type=self.sample_type, unknown_policy="append")
+                        run_class_distributions(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_colors=palette,
+                            group_order=self.group_order,
+                            sample_type=self.sample_type,
+                            unknown_policy="append",
+                            dataset_label=self.var_dataset.get(),
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                        )
                     elif analysis_type == "Class_Sums":
-                        run_class_sums(fpath, group_file, subfolder, group_colors=palette, group_order=self.group_order, sample_type=self.sample_type)
+                        run_class_sums(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_colors=palette,
+                            group_order=self.group_order,
+                            sample_type=self.sample_type,
+                            dataset_label=self.var_dataset.get(),
+                        )
                     elif analysis_type == "Class_violin_box":
-                        run_class_violin_box(fpath, group_file, subfolder, group_colors=palette, group_order=self.group_order)
+                        run_class_violin_box(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_colors=palette,
+                            group_order=self.group_order,
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                        )
                     elif analysis_type == "Class_Carbons_DB":
-                        run_class_carbons_db(fpath, group_file, subfolder, group_colors=palette, group_order=self.group_order, exclude_qc=True,)
+                        run_class_carbons_db(fpath, matched_group_file, subfolder, group_colors=palette, group_order=self.group_order, exclude_qc=True,)
+                    elif analysis_type == "Enrichment":
+                        run_enrichment_analysis(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_colors=palette,
+                            group_order=self.group_order,
+                            exclude_qc=True,
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                        )
+                    elif analysis_type == "Ratios":
+                        run_ratio_analysis(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_colors=palette,
+                            group_order=self.group_order,
+                            exclude_qc=True,
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                            ratio_settings=self._get_ratio_settings(),
+                        )
+                    elif analysis_type == "Advanced_Differential":
+                        run_advanced_differential_analysis(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_colors=palette,
+                            group_order=self.group_order,
+                            exclude_qc=True,
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                        )
+                    elif analysis_type == "UpSet":
+                        run_upset_plot(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_order=self.group_order,
+                            group_colors=palette,
+                            min_fraction=0.5,
+                            min_samples=1,
+                            top_n_intersections=10,
+                            max_classes=20,
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                        )
 
                 except Exception:
                     print(traceback.format_exc(), flush=True)
@@ -911,6 +1765,8 @@ class StatisticsPage(tk.Toplevel):
     # ==========================================================
     # SAMPLE NAME CLEANUP
     # ==========================================================
+    
+    # polarity prefixes must be preserved for POS/NEG-specific datasets.
     def _clean_sample_name(self, name: str) -> str:
         if not isinstance(name, str): return name
         cleaned = name
@@ -919,18 +1775,248 @@ class StatisticsPage(tk.Toplevel):
         cleaned = re.split(r"_P[12]", cleaned)[0]
         return cleaned.strip("_- ")
 
+    def _normalize_sample_name_for_matching(self, name: str) -> str:
+        """
+        Normalize sample names so group-file names can be matched to stats-table columns.
+        Use this only for matching, not for rewriting raw source files.
+        """
+        if not isinstance(name, str):
+            return str(name)
+
+        cleaned = str(name).strip()
+
+        # remove bracketed or plain polarity tags
+        cleaned = re.sub(r"\[?POS\]?|\[?NEG\]?", "", cleaned, flags=re.IGNORECASE)
+
+        # remove leading polarity prefixes
+        cleaned = re.sub(r"^(P_|N_)", "", cleaned, flags=re.IGNORECASE)
+
+        # remove trailing polarity suffixes if they exist
+        cleaned = re.sub(r"(_P[12]|_N[12])$", "", cleaned, flags=re.IGNORECASE)
+
+        return cleaned.strip("_- ")
+
+    def _build_dataset_specific_group_file(self, dataset_path: Path, base_group_file: Path, out_dir: Path) -> Optional[Path]:
+        """
+        Create a group file whose Sample names match the actual sample columns in dataset_path.
+        This prevents mismatches when stats tables use cleaned sample names but group files still
+        contain P_/N_ prefixes or related polarity tags.
+        """
+        if not dataset_path.exists() or not base_group_file.exists():
+            return None
+
+        try:
+            df_data = pd.read_csv(dataset_path, nrows=5, low_memory=False)
+            df_groups = pd.read_csv(base_group_file, low_memory=False)
+        except Exception:
+            print("[GroupAlign] Failed to read dataset or group file.", flush=True)
+            print(traceback.format_exc(), flush=True)
+            return None
+
+        if "Sample" not in df_groups.columns or "Group" not in df_groups.columns:
+            return None
+
+        # detect metadata columns exactly as in preparation
+        meta_keep = [
+            "UniqueID","RT (min)","m/z","Polarity","Annotation","Annotation Type",
+            "Annotation Source","Headgroup","Lipid Class","Δm/z (mDa)","Δm/z (ppm)",
+            "MS/MS score","Annotation tier","mSigma","Molecular Formula","Plasmenyl?",
+            "Number of carbons in fatty acyls","Double bond equivalents","Chain type",
+            "PUFA?","Modifications","# of modifications","Oxidized?",
+            "RSD QCs (%)","RSD Samples (%)"
+        ]
+        meta_cols = [c for c in meta_keep if c in df_data.columns]
+
+        data_sample_cols = [
+            c for c in df_data.columns
+            if c not in meta_cols
+            and "rsd" not in c.lower()
+        ]
+
+        data_sample_set = set(map(str, data_sample_cols))
+
+        g = df_groups.copy()
+        g["Sample"] = g["Sample"].astype(str).str.strip()
+
+        # first try exact match
+        exact = g[g["Sample"].isin(data_sample_set)].copy()
+
+        if len(exact) == len(data_sample_set):
+            aligned = exact.drop_duplicates(subset=["Sample"], keep="first").copy()
+        else:
+            # fall back to normalized matching
+            g["Sample_normalized"] = g["Sample"].map(self._normalize_sample_name_for_matching)
+
+            mapping = {}
+            for sample_col in data_sample_cols:
+                normalized_col = self._normalize_sample_name_for_matching(sample_col)
+                mapping[normalized_col] = sample_col
+
+            g = g[g["Sample_normalized"].isin(mapping)].copy()
+            g["Sample"] = g["Sample_normalized"].map(mapping)
+            aligned = g.drop_duplicates(subset=["Sample"], keep="first").copy()
+            aligned = aligned.drop(columns=["Sample_normalized"], errors="ignore")
+
+        # keep only rows that truly exist in the dataset
+        aligned = aligned[aligned["Sample"].isin(data_sample_set)].copy()
+
+        if aligned.empty:
+            print(f"[GroupAlign] No matching samples for dataset: {dataset_path.name}", flush=True)
+            return None
+
+        # preserve dataset column order
+        aligned["__order"] = aligned["Sample"].map({s: i for i, s in enumerate(data_sample_cols)})
+        aligned = aligned.sort_values("__order").drop(columns="__order").reset_index(drop=True)
+
+        out_path = out_dir / f"{dataset_path.stem}__sample_groups_matched.csv"
+        aligned.to_csv(out_path, index=False, encoding="utf-8-sig")
+        return out_path
+    
     # ==========================================================
     # PREPARE STATISTICAL DATASETS
     # ==========================================================
+    
+    def _restore_missing_values_from_debug(self, df_final: pd.DataFrame) -> pd.DataFrame:
+        """
+        Start from the fully processed Final_Annotated-style table and restore NaN where
+        the pre-imputation polarity-specific collapsed debug files had missing values.
+        It preserves all processed intensities and metadata from df_final. It only turns
+        imputed cells back into NaN.
+        """
+        if df_final is None or df_final.empty:
+            return df_final
+
+        out = df_final.copy()
+
+        if "UniqueID" not in out.columns:
+            print("[MissingRestore] 'UniqueID' not found in final dataframe. Skipping missing restoration.", flush=True)
+            return out
+
+        meta_keep = [
+            "UniqueID", "RT (min)", "m/z", "Polarity", "Annotation", "Annotation Type",
+            "Annotation Source", "Headgroup", "Lipid Class", "Δm/z (mDa)", "Δm/z (ppm)",
+            "MS/MS score", "Annotation tier", "mSigma", "Molecular Formula", "Plasmenyl?",
+            "Number of carbons in fatty acyls", "Double bond equivalents", "Chain type",
+            "PUFA?", "Modifications", "# of modifications", "Oxidized?",
+            "RSD QCs (%)", "RSD Samples (%)"
+        ]
+        meta_cols = [c for c in meta_keep if c in out.columns]
+
+        final_sample_cols = [
+            c for c in out.columns
+            if c not in meta_cols and "rsd" not in str(c).lower()
+        ]
+
+        if not final_sample_cols:
+            print("[MissingRestore] No sample columns detected in final dataframe.", flush=True)
+            return out
+
+        out["UniqueID"] = out["UniqueID"].astype(str).str.strip()
+        final_uid_to_idx = pd.Series(out.index.values, index=out["UniqueID"]).to_dict()
+
+        final_sample_norm_to_col = {
+            self._normalize_sample_name_for_matching(str(c)): c
+            for c in final_sample_cols
+        }
+
+        debug_files = [
+            ("POS", self.output_folder / "POS" / "debug" / "Pos_2-Final_annotated_results_adducts_collapsed.csv"),
+            ("NEG", self.output_folder / "NEG" / "debug" / "Neg_2-Final_annotated_results_adducts_collapsed.csv"),
+        ]
+
+        total_restored = 0
+
+        for polarity_label, debug_path in debug_files:
+            if not debug_path.exists():
+                print(f"[MissingRestore] Debug file not found for {polarity_label}: {debug_path}", flush=True)
+                continue
+
+            try:
+                df_debug = pd.read_csv(debug_path, low_memory=False)
+            except Exception:
+                print(f"[MissingRestore] Failed to load {debug_path}", flush=True)
+                print(traceback.format_exc(), flush=True)
+                continue
+
+            if "UniqueID" not in df_debug.columns:
+                print(f"[MissingRestore] 'UniqueID' missing in {debug_path.name}. Skipping this file.", flush=True)
+                continue
+
+            df_debug["UniqueID"] = df_debug["UniqueID"].astype(str).str.strip()
+
+            # Debug files use bare numeric IDs. Final_Annotated uses polarity-prefixed IDs.
+            if polarity_label == "POS":
+                df_debug["UniqueID"] = "P_" + df_debug["UniqueID"]
+            elif polarity_label == "NEG":
+                df_debug["UniqueID"] = "N_" + df_debug["UniqueID"]
+
+            df_debug = df_debug.drop_duplicates(subset=["UniqueID"], keep="first").copy()
+
+            debug_sample_cols = []
+            for c in df_debug.columns:
+                norm_c = self._normalize_sample_name_for_matching(str(c))
+                if norm_c in final_sample_norm_to_col:
+                    debug_sample_cols.append(c)
+
+            if not debug_sample_cols:
+                print(f"[MissingRestore] No matching debug sample columns found in {debug_path.name}", flush=True)
+                continue
+
+            debug_uid_to_idx = pd.Series(df_debug.index.values, index=df_debug["UniqueID"]).to_dict()
+            shared_uids = [uid for uid in debug_uid_to_idx if uid in final_uid_to_idx]
+
+            if not shared_uids:
+                print(f"[MissingRestore] No shared UniqueID values with {debug_path.name}", flush=True)
+                continue
+
+            restored_this_file = 0
+
+            for dbg_col in debug_sample_cols:
+                norm_name = self._normalize_sample_name_for_matching(str(dbg_col))
+                final_col = final_sample_norm_to_col.get(norm_name)
+                if final_col is None:
+                    continue
+
+                dbg_idx = [debug_uid_to_idx[uid] for uid in shared_uids]
+                fin_idx = [final_uid_to_idx[uid] for uid in shared_uids]
+
+                dbg_vals = df_debug.loc[dbg_idx, dbg_col]
+                dbg_as_str = dbg_vals.astype(str).str.strip().str.lower()
+
+                missing_mask = (
+                    dbg_vals.isna()
+                    | dbg_as_str.isin({"", "nan", "na", "none", "null"})
+                ).to_numpy()
+
+                if not missing_mask.any():
+                    continue
+
+                rows_to_null = np.asarray(fin_idx)[missing_mask]
+                out.loc[rows_to_null, final_col] = np.nan
+
+                restored_this_file += int(missing_mask.sum())
+                total_restored += int(missing_mask.sum())
+
+            print(
+                f"[MissingRestore] Processed {debug_path.name}: "
+                f"{len(shared_uids)} shared features, {restored_this_file} values restored.",
+                flush=True
+            )
+
+        print(f"[MissingRestore] Total restored missing values: {total_restored}", flush=True)
+        return out
+
+    
     def prepare_statistical_datasets(self, allowed_groups=None, exclude_qc=False, output_override: Path = None):
         """Generate CSVs (+ transposed) under /statistics for:
-           - Annotated (normalized): With_QCs / Without_QCs / HighConf_* variants
-           - Unknowns (normalized): With_QCs / Without_QCs (if Unknowns file exists)
-           - Annotated (pre-normalization): BeforeNorm_With_QCs / BeforeNorm_Without_QCs (if file exists)
+           - Annotated (normalized): With_QCs / No_QCs / HighConf_* variants
+           - Unknowns (normalized): With_QCs / No_QCs (if Unknowns file exists)
+           - Annotated (pre-normalization): BeforeNorm_With_QCs / BeforeNorm_No_QCs (if file exists)
         """
         try:
             ann_path = self.output_folder / "Final_Annotated.csv"
             grp_path = self.output_folder / "sample_groups.csv"
+            semi_ann_path = self.output_folder / "Final_Annotated_semi_quant.csv"
 
             if not ann_path.exists():
                 messagebox.showwarning("Missing File", "Final_Annotated.csv not found in output folder."); return
@@ -945,7 +2031,7 @@ class StatisticsPage(tk.Toplevel):
             # --- Clean raw groups (unfiltered) and keep a QC list from the full file ---
             df_raw_clean = df_groups_raw.copy()
             df_raw_clean["Group"] = df_raw_clean["Group"].astype(str).str.strip()
-            df_raw_clean["Sample"] = df_raw_clean["Sample"].apply(self._clean_sample_name)
+            df_raw_clean["Sample"] = df_raw_clean["Sample"].astype(str).str.strip()
             df_raw_clean = df_raw_clean.drop_duplicates(subset=["Sample"], keep="first").reset_index(drop=True)
 
             # QC list from the FULL groups file (never filtered)
@@ -984,10 +2070,7 @@ class StatisticsPage(tk.Toplevel):
                     and "rsd" not in c.lower()
                     and pd.api.types.is_numeric_dtype(df[c])
                 ]
-                if not cols: return []
-                newnames = {c: self._clean_sample_name(c) for c in cols}
-                df.rename(columns=newnames, inplace=True)
-                return list(newnames.values())
+                return cols
 
             def _save_with_T(df, meta_cols, samples, base_name):
                 path = stats_dir / base_name
@@ -999,8 +2082,11 @@ class StatisticsPage(tk.Toplevel):
 
             # ---------- Annotated (normalized) ----------
             df_ann = pd.read_csv(ann_path, low_memory=False)
+            df_ann_with_missing = self._restore_missing_values_from_debug(df_ann)
             meta_ann = _detect_meta(df_ann)
             samples_ann = _detect_samples(df_ann, meta_ann)
+            meta_ann_missing = _detect_meta(df_ann_with_missing)
+            samples_ann_missing = _detect_samples(df_ann_with_missing, meta_ann_missing)
 
             # --- POS-only and NEG-only filtering ---
             # Extract sample columns again (after renaming)
@@ -1022,27 +2108,242 @@ class StatisticsPage(tk.Toplevel):
                 samples_neg_noqc = [s for s in samples_neg if s not in qc_set_full]
                 if samples_neg_noqc:
                     _save_with_T(df_ann, meta_ann, samples_neg_noqc, "NEG_Final_Annotated_Without_QCs.csv")
+                    
+            # POS-only / NEG-only datasets with restored missingness
+            samples_pos_missing = [s for s in samples_ann_missing if s.startswith("P_")]
+            samples_neg_missing = [s for s in samples_ann_missing if s.startswith("N_")]
 
+            if samples_pos_missing:
+                _save_with_T(df_ann_with_missing, meta_ann_missing, samples_pos_missing, "POS_Final_Annotated_with_missing.csv")
+                samples_pos_missing_noqc = [s for s in samples_pos_missing if s not in qc_set_full]
+                if samples_pos_missing_noqc:
+                    _save_with_T(df_ann_with_missing, meta_ann_missing, samples_pos_missing_noqc, "POS_Final_Annotated_with_missing_Without_QCs.csv")
+
+            if samples_neg_missing:
+                _save_with_T(df_ann_with_missing, meta_ann_missing, samples_neg_missing, "NEG_Final_Annotated_with_missing.csv")
+                samples_neg_missing_noqc = [s for s in samples_neg_missing if s not in qc_set_full]
+                if samples_neg_missing_noqc:
+                    _save_with_T(df_ann_with_missing, meta_ann_missing, samples_neg_missing_noqc, "NEG_Final_Annotated_with_missing_Without_QCs.csv")
 
             if not samples_ann:
                 messagebox.showwarning("No Sample Columns", "No numeric sample intensity columns in Final_Annotated.csv"); return
 
-            # Build selected non-QC sample set and ensure QC columns are present for With_QCs
-            selected_set = set(df_groups["Sample"].dropna().astype(str)) if (allowed_groups is not None or exclude_qc) else set(samples_ann)
+            if (allowed_groups is not None or exclude_qc):
+                selected_group_samples = set(df_groups["Sample"].dropna().astype(str).str.strip())
+                selected_group_samples_norm = {self._normalize_sample_name_for_matching(s) for s in selected_group_samples}
+            else:
+                selected_group_samples_norm = {self._normalize_sample_name_for_matching(s) for s in samples_ann}
 
-            # With_QCs = selected non-QC samples PLUS all QC columns from the full groups file (if present in table)
-            samples_ann_with_qc = [c for c in samples_ann if (c in selected_set) or (c in qc_set_full)]
+            qc_set_full_norm = {self._normalize_sample_name_for_matching(s) for s in qc_set_full}
+
+            # With_QCs = selected non-QC samples PLUS all QCs from the full group file
+            samples_ann_with_qc = [
+                c for c in samples_ann
+                if (self._normalize_sample_name_for_matching(c) in selected_group_samples_norm)
+                or (self._normalize_sample_name_for_matching(c) in qc_set_full_norm)
+            ]
             if not samples_ann_with_qc:
                 messagebox.showwarning("No Samples", "No valid samples found for Annotated (With_QCs).")
             else:
                 _save_with_T(df_ann, meta_ann, samples_ann_with_qc, "Final_Annotated.csv")
 
-            # Without_QCs = selected non-QC samples (strictly exclude all QC)
-            samples_ann_without_qc = [c for c in samples_ann if (c in selected_set) and (c not in qc_set_full)]
+            # Without_QCs = selected non-QC samples only
+            samples_ann_without_qc = [
+                c for c in samples_ann
+                if (self._normalize_sample_name_for_matching(c) in selected_group_samples_norm)
+                and (self._normalize_sample_name_for_matching(c) not in qc_set_full_norm)
+            ]
+            
             if samples_ann_without_qc:
                 _save_with_T(df_ann, meta_ann, samples_ann_without_qc, "Final_Annotated_Without_QCs.csv")
+            
             else:
                 messagebox.showwarning("No Non-QC Samples", "No non-QC samples selected for Annotated (Without_QCs).")
+                
+            samples_ann_with_qc_missing = [
+                c for c in samples_ann_missing
+                if (self._normalize_sample_name_for_matching(c) in selected_group_samples_norm)
+                or (self._normalize_sample_name_for_matching(c) in qc_set_full_norm)
+            ]
+            samples_ann_without_qc_missing = [
+                c for c in samples_ann_missing
+                if (self._normalize_sample_name_for_matching(c) in selected_group_samples_norm)
+                and (self._normalize_sample_name_for_matching(c) not in qc_set_full_norm)
+            ]
+
+            if samples_ann_with_qc_missing:
+                _save_with_T(df_ann_with_missing, meta_ann_missing, samples_ann_with_qc_missing, "Final_Annotated_with_missing.csv")
+
+            if samples_ann_without_qc_missing:
+                _save_with_T(df_ann_with_missing, meta_ann_missing, samples_ann_without_qc_missing, "Final_Annotated_with_missing_Without_QCs.csv")
+                
+            # ---------- Annotated semi-quant (normalized, optional) ----------
+            if semi_ann_path.exists():
+                df_ann_semi = pd.read_csv(semi_ann_path, low_memory=False)
+                df_ann_semi_with_missing = self._restore_missing_values_from_debug(df_ann_semi)
+
+                meta_ann_semi = _detect_meta(df_ann_semi)
+                samples_ann_semi = _detect_samples(df_ann_semi, meta_ann_semi)
+
+                meta_ann_semi_missing = _detect_meta(df_ann_semi_with_missing)
+                samples_ann_semi_missing = _detect_samples(df_ann_semi_with_missing, meta_ann_semi_missing)
+
+                # POS-only semi-quant
+                samples_semi_pos = [s for s in samples_ann_semi if s.startswith("P_")]
+                samples_semi_neg = [s for s in samples_ann_semi if s.startswith("N_")]
+
+                if samples_semi_pos:
+                    _save_with_T(df_ann_semi, meta_ann_semi, samples_semi_pos, "POS_Final_Annotated_semi_quant.csv")
+                    samples_semi_pos_noqc = [s for s in samples_semi_pos if s not in qc_set_full]
+                    if samples_semi_pos_noqc:
+                        _save_with_T(df_ann_semi, meta_ann_semi, samples_semi_pos_noqc, "POS_Final_Annotated_semi_quant_Without_QCs.csv")
+
+                if samples_semi_neg:
+                    _save_with_T(df_ann_semi, meta_ann_semi, samples_semi_neg, "NEG_Final_Annotated_semi_quant.csv")
+                    samples_semi_neg_noqc = [s for s in samples_semi_neg if s not in qc_set_full]
+                    if samples_semi_neg_noqc:
+                        _save_with_T(df_ann_semi, meta_ann_semi, samples_semi_neg_noqc, "NEG_Final_Annotated_semi_quant_Without_QCs.csv")
+
+                # POS-only / NEG-only semi-quant with restored missingness
+                samples_semi_pos_missing = [s for s in samples_ann_semi_missing if s.startswith("P_")]
+                samples_semi_neg_missing = [s for s in samples_ann_semi_missing if s.startswith("N_")]
+
+                if samples_semi_pos_missing:
+                    _save_with_T(
+                        df_ann_semi_with_missing,
+                        meta_ann_semi_missing,
+                        samples_semi_pos_missing,
+                        "POS_Final_Annotated_semi_quant_with_missing.csv"
+                    )
+                    samples_semi_pos_missing_noqc = [s for s in samples_semi_pos_missing if s not in qc_set_full]
+                    if samples_semi_pos_missing_noqc:
+                        _save_with_T(
+                            df_ann_semi_with_missing,
+                            meta_ann_semi_missing,
+                            samples_semi_pos_missing_noqc,
+                            "POS_Final_Annotated_semi_quant_with_missing_Without_QCs.csv"
+                        )
+
+                if samples_semi_neg_missing:
+                    _save_with_T(
+                        df_ann_semi_with_missing,
+                        meta_ann_semi_missing,
+                        samples_semi_neg_missing,
+                        "NEG_Final_Annotated_semi_quant_with_missing.csv"
+                    )
+                    samples_semi_neg_missing_noqc = [s for s in samples_semi_neg_missing if s not in qc_set_full]
+                    if samples_semi_neg_missing_noqc:
+                        _save_with_T(
+                            df_ann_semi_with_missing,
+                            meta_ann_semi_missing,
+                            samples_semi_neg_missing_noqc,
+                            "NEG_Final_Annotated_semi_quant_with_missing_Without_QCs.csv"
+                        )
+
+                if (allowed_groups is not None or exclude_qc):
+                    selected_group_samples_semi = set(df_groups["Sample"].dropna().astype(str).str.strip())
+                    selected_group_samples_semi_norm = {
+                        self._normalize_sample_name_for_matching(s) for s in selected_group_samples_semi
+                    }
+                else:
+                    selected_group_samples_semi_norm = {
+                        self._normalize_sample_name_for_matching(s) for s in samples_ann_semi
+                    }
+
+                samples_ann_semi_with_qc = [
+                    c for c in samples_ann_semi
+                    if (self._normalize_sample_name_for_matching(c) in selected_group_samples_semi_norm)
+                    or (self._normalize_sample_name_for_matching(c) in qc_set_full_norm)
+                ]
+                samples_ann_semi_without_qc = [
+                    c for c in samples_ann_semi
+                    if (self._normalize_sample_name_for_matching(c) in selected_group_samples_semi_norm)
+                    and (self._normalize_sample_name_for_matching(c) not in qc_set_full_norm)
+                ]
+
+                if samples_ann_semi_with_qc:
+                    _save_with_T(df_ann_semi, meta_ann_semi, samples_ann_semi_with_qc, "Final_Annotated_semi_quant.csv")
+
+                if samples_ann_semi_without_qc:
+                    _save_with_T(
+                        df_ann_semi,
+                        meta_ann_semi,
+                        samples_ann_semi_without_qc,
+                        "Final_Annotated_semi_quant_Without_QCs.csv"
+                    )
+
+                samples_ann_semi_with_qc_missing = [
+                    c for c in samples_ann_semi_missing
+                    if (self._normalize_sample_name_for_matching(c) in selected_group_samples_semi_norm)
+                    or (self._normalize_sample_name_for_matching(c) in qc_set_full_norm)
+                ]
+                samples_ann_semi_without_qc_missing = [
+                    c for c in samples_ann_semi_missing
+                    if (self._normalize_sample_name_for_matching(c) in selected_group_samples_semi_norm)
+                    and (self._normalize_sample_name_for_matching(c) not in qc_set_full_norm)
+                ]
+
+                if samples_ann_semi_with_qc_missing:
+                    _save_with_T(
+                        df_ann_semi_with_missing,
+                        meta_ann_semi_missing,
+                        samples_ann_semi_with_qc_missing,
+                        "Final_Annotated_semi_quant_with_missing.csv"
+                    )
+
+                if samples_ann_semi_without_qc_missing:
+                    _save_with_T(
+                        df_ann_semi_with_missing,
+                        meta_ann_semi_missing,
+                        samples_ann_semi_without_qc_missing,
+                        "Final_Annotated_semi_quant_with_missing_Without_QCs.csv"
+                    )
+
+                tier_col_semi = next((c for c in df_ann_semi.columns if c.strip().lower() == "annotation tier"), None)
+                if tier_col_semi:
+                    high_mask_semi = df_ann_semi[tier_col_semi].fillna("").str.lower() == "high confidence"
+                    df_high_semi = df_ann_semi.loc[high_mask_semi].copy()
+
+                    high_mask_semi_missing = (
+                        df_ann_semi_with_missing[tier_col_semi].fillna("").str.lower() == "high confidence"
+                    )
+                    df_high_semi_missing = df_ann_semi_with_missing.loc[high_mask_semi_missing].copy()
+                else:
+                    df_high_semi = df_ann_semi.copy()
+                    df_high_semi_missing = df_ann_semi_with_missing.copy()
+
+                if samples_ann_semi_with_qc:
+                    _save_with_T(
+                        df_high_semi,
+                        meta_ann_semi,
+                        samples_ann_semi_with_qc,
+                        "Final_Annotated_semi_quant_HighConf.csv"
+                    )
+
+                if samples_ann_semi_without_qc:
+                    _save_with_T(
+                        df_high_semi,
+                        meta_ann_semi,
+                        samples_ann_semi_without_qc,
+                        "Final_Annotated_semi_quant_Without_QCs_HighConf.csv"
+                    )
+
+                if samples_ann_semi_with_qc_missing:
+                    _save_with_T(
+                        df_high_semi_missing,
+                        meta_ann_semi_missing,
+                        samples_ann_semi_with_qc_missing,
+                        "Final_Annotated_semi_quant_with_missing_HighConf.csv"
+                    )
+
+                if samples_ann_semi_without_qc_missing:
+                    _save_with_T(
+                        df_high_semi_missing,
+                        meta_ann_semi_missing,
+                        samples_ann_semi_without_qc_missing,
+                        "Final_Annotated_semi_quant_with_missing_Without_QCs_HighConf.csv"
+                    )
+
 
             # High confidence (if present)
             tier_col = next((c for c in df_ann.columns if c.strip().lower() == "annotation tier"), None)
@@ -1056,6 +2357,17 @@ class StatisticsPage(tk.Toplevel):
                 _save_with_T(df_high, meta_ann, samples_ann_with_qc, "Final_Annotated_HighConf.csv")
             if samples_ann_without_qc:
                 _save_with_T(df_high, meta_ann, samples_ann_without_qc, "Final_Annotated_Without_QCs_HighConf.csv")
+                
+            if tier_col:
+                high_mask_missing = df_ann_with_missing[tier_col].fillna("").str.lower() == "high confidence"
+                df_high_missing = df_ann_with_missing.loc[high_mask_missing].copy()
+            else:
+                df_high_missing = df_ann_with_missing.copy()
+
+            if samples_ann_with_qc_missing:
+                _save_with_T(df_high_missing, meta_ann_missing, samples_ann_with_qc_missing, "Final_Annotated_with_missing_HighConf.csv")
+            if samples_ann_without_qc_missing:
+                _save_with_T(df_high_missing, meta_ann_missing, samples_ann_without_qc_missing, "Final_Annotated_with_missing_Without_QCs_HighConf.csv")
 
 
             # ---------- Unknowns (optional) ----------
@@ -1096,9 +2408,22 @@ class StatisticsPage(tk.Toplevel):
                     if samples_unk_neg_noqc:
                         _save_with_T(df_unk, meta_unk, samples_unk_neg_noqc, "NEG_Final_Unknowns_Without_QCs.csv")
 
-                sel_unk = set(df_groups["Sample"].dropna().astype(str)) if (allowed_groups is not None or exclude_qc) else set(samples_unk)
-                samples_unk_with_qc = [c for c in samples_unk if (c in sel_unk) or (c in qc_set_full)]
-                samples_unk_without_qc = [c for c in samples_unk if (c in sel_unk) and (c not in qc_set_full)]
+                if (allowed_groups is not None or exclude_qc):
+                    selected_group_samples_unk = set(df_groups["Sample"].dropna().astype(str).str.strip())
+                    selected_group_samples_unk_norm = {self._normalize_sample_name_for_matching(s) for s in selected_group_samples_unk}
+                else:
+                    selected_group_samples_unk_norm = {self._normalize_sample_name_for_matching(s) for s in samples_unk}
+
+                samples_unk_with_qc = [
+                    c for c in samples_unk
+                    if (self._normalize_sample_name_for_matching(c) in selected_group_samples_unk_norm)
+                    or (self._normalize_sample_name_for_matching(c) in qc_set_full_norm)
+                ]
+                samples_unk_without_qc = [
+                    c for c in samples_unk
+                    if (self._normalize_sample_name_for_matching(c) in selected_group_samples_unk_norm)
+                    and (self._normalize_sample_name_for_matching(c) not in qc_set_full_norm)
+                ]
                 if samples_unk_with_qc:
                     _save_with_T(df_unk, meta_unk, samples_unk_with_qc, "Final_Unknowns.csv")
                 if samples_unk_without_qc:
@@ -1118,9 +2443,22 @@ class StatisticsPage(tk.Toplevel):
                 df_bfn = pd.read_csv(bfn_src, low_memory=False)
                 meta_bfn = _detect_meta(df_bfn)
                 samples_bfn = _detect_samples(df_bfn, meta_bfn)
-                sel_bfn = set(df_groups["Sample"].dropna().astype(str)) if (allowed_groups is not None or exclude_qc) else set(samples_bfn)
-                samples_bfn_with_qc = [c for c in samples_bfn if (c in sel_bfn) or (c in qc_set_full)]
-                samples_bfn_without_qc = [c for c in samples_bfn if (c in sel_bfn) and (c not in qc_set_full)]
+                if (allowed_groups is not None or exclude_qc):
+                    selected_group_samples_bfn = set(df_groups["Sample"].dropna().astype(str).str.strip())
+                    selected_group_samples_bfn_norm = {self._normalize_sample_name_for_matching(s) for s in selected_group_samples_bfn}
+                else:
+                    selected_group_samples_bfn_norm = {self._normalize_sample_name_for_matching(s) for s in samples_bfn}
+
+                samples_bfn_with_qc = [
+                    c for c in samples_bfn
+                    if (self._normalize_sample_name_for_matching(c) in selected_group_samples_bfn_norm)
+                    or (self._normalize_sample_name_for_matching(c) in qc_set_full_norm)
+                ]
+                samples_bfn_without_qc = [
+                    c for c in samples_bfn
+                    if (self._normalize_sample_name_for_matching(c) in selected_group_samples_bfn_norm)
+                    and (self._normalize_sample_name_for_matching(c) not in qc_set_full_norm)
+                ]
                 if samples_bfn_with_qc:
                     _save_with_T(df_bfn, meta_bfn, samples_bfn_with_qc, "Final_Annotated_BeforeNorm.csv")
                 if samples_bfn_without_qc:
@@ -1135,14 +2473,17 @@ class StatisticsPage(tk.Toplevel):
                 "Statistics Files Created",
                 f"Statistical datasets created successfully in:\n\n{stats_dir}\n\n"
                 "• Annotated (+ variants)\n"
+                "• Annotated semi-quant (+ variants) if available\n"
+                "• Annotated semi-quant (+ variants, including with_missing) if available\n"
                 "• Unknowns (+ Without_QCs) if available\n"
                 "• BeforeNorm (+ Without_QCs) if available\n"
             )
             self.summary_label.config(text=f"✅ Statistical datasets (and transposed versions) saved to {stats_dir}")
 
             # Enable buttons
-            for btn in (self.pca_button, self.plsda_button, self.heatmap_button, self.volcano_button, self.boxplots_button, self.violin_button,
-                        self.correlations_button, self.classdist_button, self.summint_button, self.classviolinbox_button, self.classcarbons_button):
+            for btn in (self.pca_button, self.plsda_button, self.heatmap_button, self.selected_heatmap_button, self.selected_heatmap_settings_button, self.volcano_button, self.boxplots_button, self.violin_button,
+                        self.correlations_button, self.classdist_button, self.summint_button, self.classviolinbox_button, self.classcarbons_button,
+                        self.enrichment_button, self.ratio_button, self.ratio_settings_button, self.upset_button, self.advanceddiff_button):
                 btn.config(state="normal")
 
         except Exception as e:
@@ -1177,6 +2518,7 @@ class StatisticsPage(tk.Toplevel):
 
 class GroupSelectionDialog(tk.Toplevel):
     def __init__(self, parent: "StatisticsPage", df_groups: pd.DataFrame, base_output: Path, current_session: Optional[Path]):
+        
         super().__init__(parent)
         self.title("Select groups & output")
         self.configure(bg="white")
@@ -1303,7 +2645,7 @@ class GroupSelectionDialog(tk.Toplevel):
         if self.exclude_qc.get():
             df = df[df["Group"].str.upper() != "QC"]
         df = df[df["Group"].isin(sel)].copy()
-        df["Sample"] = df["Sample"].apply(self.parent._clean_sample_name)
+        df["Sample"] = df["Sample"].astype(str).str.strip()
         df = df.drop_duplicates(subset=["Sample"], keep="first").reset_index(drop=True)
         df.to_csv(Path(self.session_dir) / "sample_groups_cleaned.csv", index=False, encoding="utf-8-sig")
 

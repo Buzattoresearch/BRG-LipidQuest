@@ -573,10 +573,10 @@ class MetaboscapeApp:
             return
         root = Path(self.output_folder)
         try:
-            print(f"\n\n[MERGE] Running simple polarity concatenation (FINAL) in {root}", flush=True)
+            print(f"\n\n[MERGE] Running simple polarity concatenation (FINAL + SEMI-QUANT) in {root}", flush=True)
             merge_simple(root)
 
-            print(f"[MERGE] Running best-polarity selection (FINAL) in {root}", flush=True)
+            print(f"[MERGE] Running best-polarity selection (FINAL + SEMI-QUANT) in {root}", flush=True)
             merge_best_polarity(root)
 
             print(f"[MERGE] Running simple merging BEFORE normalization in {root}", flush=True)
@@ -655,11 +655,15 @@ class MetaboscapeApp:
         # Inform the user
         messagebox.showinfo(
             "Polarity merge complete",
-            "Combined polarity files have been created in the output folder:\n\n"
-            "  - Combined_Final_Annotated_simple.csv\n"
-            "  - Combined_Final_Unknowns_simple.csv (if unknowns exist)\n"
-            "  - Combined_Final_Annotated_best_polarity.csv\n"
-            "  - Combined_Final_Unknowns_best_polarity.csv (if unknowns exist)"
+            "Merged polarity files have been created in the output folder:\n\n"
+            "debug_merging/\n"
+            "  - Final_Annotated_simple_combination.csv\n"
+            "  - Final_Annotated_semi_quant_simple_combination.csv\n"
+            "  - Final_Unknowns_simple_combination.csv (if unknowns exist)\n\n"
+            "root output folder:\n"
+            "  - Final_Annotated.csv\n"
+            "  - Final_Annotated_semi_quant.csv\n"
+            "  - Final_Unknowns.csv (if unknowns exist)"
         )
 
 

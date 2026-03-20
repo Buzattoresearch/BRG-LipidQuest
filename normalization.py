@@ -88,7 +88,7 @@ It saves:
 # =======================
 qc_rsd_limit = 35
 sample_rsd_limit = 70
-MAX_QC_RSD_WORSEN_PCT = 5.0     # Allow QC RSD to increase by at most this % (relative) after normalization
+MAX_QC_RSD_WORSEN_PCT = 20.0     # Allow QC RSD to increase by at most this % (relative) after normalization
 
 def _safe_rsd_series(s: pd.Series) -> float:
     v = pd.to_numeric(s, errors="coerce").replace([np.inf, -np.inf, 0], np.nan).dropna().to_numpy(float)
@@ -350,6 +350,13 @@ def normalize_by_internal_standards(
     is_df = pd.read_csv(internal_standards_csv, low_memory=False).reset_index(drop=True)
     is_df["Annotation"] = is_df["Annotation"].apply(_canonical_is_name)
     class_map = pd.read_csv(class_to_is_csv, low_memory=False)
+    
+    # Preserve QC detectability columns from the imputed feature table
+    qc_meta_cols = [c for c in ["QC detected count"] if c in features_df.columns]
+    if qc_meta_cols:
+        print(f"[INFO] Preserving QC metadata columns: {qc_meta_cols}", flush=True)
+    else:
+        print("[INFO] No QC metadata columns found in input features file.", flush=True)
 
     sample_cols = [c for c in features_df.columns if c.startswith("P_") or c.startswith("N_")]
     if not sample_cols:
@@ -394,6 +401,27 @@ def normalize_by_internal_standards(
         
     # Use this QC column list everywhere below (selection, overrides, reporting)
     qc_cols_use = qc_cols[:]  # shallow copy
+
+    # ---------------------------------------------------------
+    # Identify blank samples so they do not penalize IS filters
+    # ---------------------------------------------------------
+    blank_samples = group_df.loc[
+        group_df["Group"].astype(str).str.strip().str.lower().str.contains("blank", na=False),
+        "Sample"
+    ].tolist()
+
+    blank_cols = []
+    for s in blank_samples:
+        if s in features_df.columns:
+            blank_cols.append(s)
+        else:
+            blank_cols.extend([c for c in features_df.columns if s in c])
+    blank_cols = list(dict.fromkeys(blank_cols))
+
+    if blank_cols:
+        print(f"[INFO] Found {len(blank_cols)} blank columns. They will be excluded from IS missingness and sample-RSD filtering.", flush=True)
+    else:
+        print("[INFO] No blank columns detected for IS filtering.", flush=True)
 
     # ---------------------------------------------------------
     # Select internal standards metadata file based on user GUI
@@ -450,7 +478,15 @@ def normalize_by_internal_standards(
         if col in is_df.columns: is_df[col] = pd.to_numeric(is_df[col], errors="coerce")
 
     sample_cols_is = [c for c in is_df.columns if c.startswith("P_") or c.startswith("N_")]
-    if not sample_cols_is: raise ValueError("Internal standards file has no sample intensity columns (P_/N_).")
+    if not sample_cols_is:
+        raise ValueError("Internal standards file has no sample intensity columns (P_/N_).")
+
+    # Exclude blanks from strict IS reliability filters
+    nonblank_sample_cols_is = [c for c in sample_cols_is if c not in blank_cols]
+    if not nonblank_sample_cols_is:
+        print("[WARNING] No non-blank IS sample columns found. Falling back to all sample columns for IS filtering.", flush=True)
+        nonblank_sample_cols_is = sample_cols_is[:]
+
 
     if "RSD QCs (%)" not in is_df.columns: is_df["RSD QCs (%)"] = np.nan
     is_df["RSD QCs (%)"] = is_df["RSD QCs (%)"].astype(float)
@@ -466,11 +502,16 @@ def normalize_by_internal_standards(
     qc_rsd_vals = []; sample_rsd_vals = []; no_missing_flags = []
     for _, row in is_df.iterrows():
         qc_rsd_vals.append(_compute_is_qc_rsd_row(row))
+
+        # Recompute sample RSD using non-blank samples only
         rsd_samples = row.get("RSD Samples (%)", np.nan)
+        if pd.isna(rsd_samples):
+            rsd_samples = _safe_rsd_series(pd.to_numeric(row[nonblank_sample_cols_is], errors="coerce"))
         sample_rsd_vals.append(float(rsd_samples) if pd.notna(rsd_samples) else np.nan)
-        vals = pd.to_numeric(row[sample_cols_is], errors="coerce").to_numpy(float)
-        nm = np.isfinite(vals) & (vals != 0)
-        valid_vals = np.isfinite(vals) & (vals != 0) & (vals >= 5000) # Additional requirement: IS intensities must be ≥ 5,000 everywhere
+
+        # Missingness / low-signal rule should ignore blanks
+        vals = pd.to_numeric(row[nonblank_sample_cols_is], errors="coerce").to_numpy(float)
+        valid_vals = np.isfinite(vals) & (vals != 0) & (vals >= 5000)
         no_missing_flags.append(bool(np.all(valid_vals)))
 
     is_df["__QC_RSD__computed__"] = qc_rsd_vals
@@ -524,6 +565,8 @@ def normalize_by_internal_standards(
         print(f"[WARNING] Failed to write IS_filter_summary.csv: {e}", flush=True)
 
     pre_filter_len = len(is_df)
+    is_df_all = is_df.copy()
+
     if qc_cols:
         is_df = is_df[
             (is_df["__NoMissing__"]) &
@@ -535,7 +578,29 @@ def normalize_by_internal_standards(
             (is_df["__NoMissing__"]) &
             (is_df["__RSD_Samples__"] < sample_rsd_limit)
         ].copy()
-    print(f"[INFO] Internal standards passing strict filters: {len(is_df)}/{pre_filter_len}", flush = True)
+
+    print(f"[INFO] Internal standards passing strict filters: {len(is_df)}/{pre_filter_len}", flush=True)
+
+    # Fallback: if nothing passes, relax only the missingness rule after excluding blanks
+    if is_df.empty:
+        print("[WARNING] No internal standards passed strict filters. Applying fallback filter without the '__NoMissing__' requirement.", flush=True)
+
+        if qc_cols:
+            is_df = is_df_all[
+                (is_df_all["__QC_RSD__computed__"] < qc_rsd_limit) &
+                (is_df_all["__RSD_Samples__"] < sample_rsd_limit)
+            ].copy()
+        else:
+            is_df = is_df_all[
+                (is_df_all["__RSD_Samples__"] < sample_rsd_limit)
+            ].copy()
+
+        print(f"[INFO] Internal standards passing fallback filters: {len(is_df)}/{pre_filter_len}", flush=True)
+
+    # Final hard fallback: if still empty, keep all IS and let downstream selection choose the least bad option
+    if is_df.empty:
+        print("[WARNING] Still no internal standards available after fallback. Retaining all internal standards for downstream ranking.", flush=True)
+        is_df = is_df_all.copy()
 
     # Collapse adducts
     collapsed_rows = []
@@ -961,6 +1026,11 @@ def normalize_by_internal_standards(
 
     # Apply normalization
     norm_df = features_df.copy()
+    # Remove carried-over legacy RSD columns that must be recomputed after normalization
+    legacy_rsd_cols = [c for c in ["RSD QCs (%)", "RSD Samples (%)"] if c in norm_df.columns]
+    if legacy_rsd_cols:
+        norm_df.drop(columns=legacy_rsd_cols, inplace=True)
+    
     for idx, row in features_df.iterrows():
         den = chosen_den_vector[idx]
         if den is None: continue
@@ -1066,22 +1136,31 @@ def normalize_by_internal_standards(
                         worse_exceeded += 1
 
 
-    norm_df["RSD QCs (%)"] = rsd_qc_vals; norm_df["RSD Samples (%)"] = rsd_sample_vals
+    norm_df["RSD QCs (%)"] = rsd_qc_vals
+    norm_df["RSD Samples (%)"] = rsd_sample_vals
 
+    stale_group_rsd_cols = [c for c in norm_df.columns if c.startswith("RSD_")]
+    if stale_group_rsd_cols:
+        norm_df.drop(columns=stale_group_rsd_cols, inplace=True)
+    
     for g in non_qc_groups:
+        if str(g).strip().upper() == "QC":
+            continue
+
         cols = [c for c in sample_cols if any((s == c) or (s in c) for s in group_map[g])]
         rsd_vals = []
         for _, row in norm_df.iterrows():
             vals = pd.to_numeric(row[cols], errors="coerce").replace(0, np.nan).dropna()
             rsd = (vals.std(ddof=1) / vals.mean() * 100) if len(vals) > 1 else np.nan
             rsd_vals.append(rsd)
-        norm_df[f"RSD_{g} [%]"] = rsd_vals
+        norm_df["RSD_{0} [%]".format(g)] = rsd_vals
    
     # Save
-    print("[STEP] Reordering columns before saving...", flush = True)
+    print("[STEP] Reordering columns before saving...", flush=True)
+
     core_cols = [
         "UniqueID", "RT (min)", "m/z", "Neutral mass", "Adducts", "Polarity", "Internal Standard",
-        "RSD QCs (%)", "RSD Samples (%)",
+        "RSD QCs (%)", "RSD Samples (%)", "QC detected count", "RSD QCs observed before imputation (%)",
         "MS/MS available?", "Annotation", "Annotation Type",
         "Metaboscape Annotation Status", "Annotation Source", "Headgroup", "Lipid Class",
         "Δm/z (mDa)", "Δm/z (ppm)", "MS/MS score", "Annotation tier", "mSigma",
@@ -1093,7 +1172,21 @@ def normalize_by_internal_standards(
         "Minimum Intensity (all samples)", "Maximum Intensity (all samples)",
         "Matched IS", "Matched IS Reason", "Polarity_norm"
     ]
-    ordered_cols = [c for c in core_cols if c in norm_df.columns] + sample_cols
+
+    group_rsd_cols = [
+        c for c in norm_df.columns
+        if c.startswith("RSD_") and c not in ["RSD QCs (%)", "RSD Samples (%)"]
+    ]
+    group_rsd_cols = sorted(group_rsd_cols)
+
+    ordered_cols = []
+    for c in core_cols:
+        if c in norm_df.columns:
+            ordered_cols.append(c)
+        if c == "RSD Samples (%)":
+            ordered_cols.extend([x for x in group_rsd_cols if x not in ordered_cols])
+
+    ordered_cols.extend([c for c in sample_cols if c not in ordered_cols])
     norm_df = norm_df[[c for c in ordered_cols if c in norm_df.columns]]
 
     out_annotated = output_folder / "debug" / f"{pol_tag}4-Final_annotated_results_normalized.csv"

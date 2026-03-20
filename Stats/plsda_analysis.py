@@ -1,4 +1,5 @@
 import warnings
+import textwrap
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -10,52 +11,26 @@ from sklearn.model_selection import cross_val_score, KFold
 from sklearn.metrics import r2_score, accuracy_score
 from matplotlib.patches import Ellipse
 from Stats.utils import load_dataset, prepare_output_dir
+from Stats.figure_style import build_group_palette, get_figure_style
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.simplefilter("ignore", pd.errors.PerformanceWarning)
 
 import matplotlib as mpl
-mpl.rcParams["font.family"] = "sans-serif"
-mpl.rcParams["font.sans-serif"] = ["DejaVu Sans", "Arial", "Liberation Sans"]
+mpl.rcParams["font.family"] = "Arial"
+mpl.rcParams["font.sans-serif"] = ["Arial", "Liberation Sans", "DejaVu Sans"]
 mpl.rcParams["mathtext.default"] = "regular" 
 
 plt.rcParams["font.size"] = 14
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", message="Glyph .* missing from font.*")
+warnings.filterwarnings("ignore", message="y residual is constant at iteration .*")
 
 # ==========================================================
 # Helper functions
 # ==========================================================
-def make_distinct_palette(groups):
-    """Return a dict {group: rgb} with enough distinct colors.
-    - QC (any case) is always black and does not consume a color slot.
-    - Supports many classes via tab palettes + HUSL fallback.
-    """
-    groups = [str(g) for g in groups]
-    unique_in_order = list(dict.fromkeys(groups))
-
-    non_qc = [g for g in unique_in_order if g.lower() != "qc"]
-    has_qc = any(g.lower() == "qc" for g in unique_in_order)
-
-    n = len(non_qc)
-    if n <= 10:
-        base = sns.color_palette("tab10", n_colors=n)
-    elif n <= 20:
-        base = sns.color_palette("tab20", n_colors=n)
-    elif n <= 32:
-        base = (
-            sns.color_palette("tab20", 20)
-            + sns.color_palette("tab20b", 20)
-            + sns.color_palette("tab20c", 20)
-        )[:n]
-    else:
-        base = sns.husl_palette(n, s=0.9, l=0.55)
-
-    cmap = {g: base[i] for i, g in enumerate(non_qc)}
-    if has_qc:
-        for g in unique_in_order:
-            if g.lower() == "qc":
-                cmap[g] = "#000000"
+def make_distinct_palette(groups, group_colors=None):
+    _, cmap = build_group_palette(groups, group_colors=group_colors, group_order=None)
     return cmap
         
 def get_cov_ellipse(cov, center, nstd=1.96, **kwargs):
@@ -67,15 +42,68 @@ def get_cov_ellipse(cov, center, nstd=1.96, **kwargs):
     return Ellipse(xy=center, width=width, height=height, angle=angle, **kwargs)
 
 
+def _ellipse_bounds(cov, center, nstd=1.96):
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    eigvals = np.clip(np.asarray(eigvals, dtype=float), a_min=0.0, a_max=None)
+    order = eigvals.argsort()[::-1]
+    eigvals = eigvals[order]
+    eigvecs = eigvecs[:, order]
+    radii = nstd * np.sqrt(eigvals)
+    transform = eigvecs @ np.diag(radii)
+    x_extent = float(np.sqrt(np.sum(transform[0, :] ** 2)))
+    y_extent = float(np.sqrt(np.sum(transform[1, :] ** 2)))
+    cx, cy = float(center[0]), float(center[1])
+    return cx - x_extent, cx + x_extent, cy - y_extent, cy + y_extent
+
+
+def _safe_cv_splits(n_samples: int, preferred: int = 5) -> int:
+    """
+    Choose a CV split count that avoids 1-sample test folds when possible,
+    since R^2 is undefined for those folds.
+    """
+    if n_samples < 4:
+        return 2
+    max_valid_splits = max(2, n_samples // 2)
+    return max(2, min(preferred, max_valid_splits))
+
+
+def _max_components_for_cv(n_samples: int, n_features: int, cv_splits: int) -> int:
+    """
+    Cap components by the smallest training fold size across CV splits.
+    """
+    max_test_size = int(np.ceil(n_samples / cv_splits))
+    min_train_size = max(2, n_samples - max_test_size)
+    return max(2, min(n_features, min_train_size))
+
+
+def _plsda_interpretation(q2_value: float, p_value: float) -> tuple[str, str]:
+    notes = []
+    color = "dimgray"
+
+    if pd.notna(q2_value) and q2_value < 0:
+        notes.append("Warning: negative Q2 suggests poor predictive performance or possible overfitting.")
+        color = "firebrick"
+
+    if pd.notna(p_value) and p_value > 0.05:
+        notes.append("Permutation p > 0.05 means group separation is not clearly stronger than random.")
+        color = "firebrick"
+
+    if not notes:
+        text = "Interpretation: positive Q2 and permutation p <= 0.05 support a more reliable model."
+        return textwrap.fill(text, width=70), color
+
+    return textwrap.fill(" ".join(notes), width=70), color
+
+
 def find_optimal_components(X, y):
     """Find optimal number of components based on CV R²."""
-    max_components = min(X.shape[1], len(np.unique(y)) - 1)
-    if max_components < 5:
-        max_components = 5
+    n_samples, n_features = X.shape
+    cv_splits = _safe_cv_splits(n_samples, preferred=5)
+    max_components = _max_components_for_cv(n_samples, n_features, cv_splits)
     r2_scores = []
     for n in range(2, max_components + 1):
         pls = PLSRegression(n_components=n)
-        score = np.mean(cross_val_score(pls, X, y, cv=5, scoring='r2'))
+        score = float(np.nanmean(cross_val_score(pls, X, y, cv=cv_splits, scoring='r2')))
         r2_scores.append(score)
     best = np.argmax(r2_scores) + 2  # ensure minimum 2
     return best, r2_scores[best - 2]
@@ -91,7 +119,7 @@ def permutation_test(X, y, pls, n_permutations=100):
         pls_perm.fit(X, y_perm)
         perm_r2 = r2_score(y_perm, pls_perm.predict(X))
         perm_r2_scores.append(perm_r2)
-    p_value = np.sum(np.array(perm_r2_scores) >= true_r2) / n_permutations
+    p_value = (np.sum(np.array(perm_r2_scores) >= true_r2) + 1.0) / (n_permutations + 1.0)
     return true_r2, p_value
 
 
@@ -101,7 +129,7 @@ def calculate_q2_and_accuracy(pls, X, y, n_folds=5):
     - Multiclass: classify by nearest group centroid in score space.
     """
     from sklearn.model_selection import KFold
-    kf = KFold(n_splits=n_folds, shuffle=True, random_state=42)
+    kf = KFold(n_splits=_safe_cv_splits(len(X), preferred=n_folds), shuffle=True, random_state=42)
 
     y_true_all, y_pred_cont_all = [], []
     accuracies = []
@@ -164,7 +192,8 @@ def plot_vip(vip_scores,
              filename="VIP_scores_plot.png",
              top_n=None,
              annotations=None,
-             clean_labels=False):
+             clean_labels=False,
+             style=None):
     """
     Creates horizontal VIP barplots identical to your original ones.
     - Bars = Viridis gradient with black borders
@@ -179,6 +208,7 @@ def plot_vip(vip_scores,
     plt.close('all')
     plt.ioff()
     
+    style = style or get_figure_style(False, 100)
     # Convert to DataFrame
     # Convert to DataFrame
     df = pd.DataFrame({"Feature": feature_names, "VIP": np.asarray(vip_scores, dtype=float)})
@@ -217,26 +247,27 @@ def plot_vip(vip_scores,
 
     ax.invert_yaxis()
 
-    ax.set_title("Variable Importance in Projection (VIP) Scores", fontsize=14, pad=12, fontweight="bold")
-    ax.set_xlabel("VIP Scores", fontsize=12, labelpad=10)
-    ax.set_ylabel("Variables", fontsize=12, labelpad=10)
+    ax.set_title("VIP Scores", fontsize=style["title_size"], pad=12, fontweight="bold")
+    ax.set_xlabel("VIP Scores", fontsize=style["label_size"], labelpad=10)
+    ax.set_ylabel("Variables", fontsize=style["label_size"], labelpad=10)
     ax.grid(axis="x", linestyle="--", linewidth=0.5, alpha=0.6)
 
     # Add full rectangular border
     for spine in ax.spines.values():
         spine.set_visible(True)
-        spine.set_linewidth(1.0)
+        spine.set_linewidth(style["line_width"])
         spine.set_color("black")
 
-    fig.savefig(save_dir / filename, dpi=100, bbox_inches="tight", pad_inches=0.15, facecolor="white")
-    fig.savefig(save_dir / filename.replace(".png", ".svg"), dpi=100, bbox_inches="tight", pad_inches=0.15, facecolor="white")
+    fig.savefig(save_dir / filename, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.15, facecolor="white")
+    fig.savefig(save_dir / filename.replace(".png", ".svg"), bbox_inches="tight", pad_inches=0.15, facecolor="white")
     plt.close(fig)
 
 # ==========================================================
 # Main PLS-DA runner
 # ==========================================================
-def run_plsda(file_path, group_file, save_dir, group_colors=None, group_order=None):
+def run_plsda(file_path, group_file, save_dir, group_colors=None, group_order=None, dpi: int = 100, publication_theme: bool = False):
     print(f"[PLS-DA] Running analysis for: {Path(file_path).name}", flush=True)
+    style = get_figure_style(publication_theme=publication_theme, dpi=dpi)
 
     # === Load standardized dataset ===
     X, y_labels, feature_meta = load_dataset(file_path, group_file)
@@ -272,7 +303,7 @@ def run_plsda(file_path, group_file, save_dir, group_colors=None, group_order=No
     # ==========================================================
     # SCORES PLOT
     # ==========================================================
-    plt.figure(figsize=(9, 6))
+    plt.figure(figsize=(10, 6))
     # Derive ordered groups (respect GUI order if provided)
     natural = list(pd.unique(y_labels.astype(str)))
     if group_order:
@@ -284,12 +315,12 @@ def run_plsda(file_path, group_file, save_dir, group_colors=None, group_order=No
     if isinstance(group_colors, dict) and group_colors:
         color_map = {g: group_colors.get(g) for g in groups}
         # backfill any None with generated colors
-        gen_map = make_distinct_palette(groups)
+        gen_map = make_distinct_palette(groups, group_colors=group_colors)
         for g in groups:
             if not color_map.get(g):
                 color_map[g] = gen_map[g]
     else:
-        color_map = make_distinct_palette(groups)
+        color_map = make_distinct_palette(groups, group_colors=group_colors)
 
     ax = sns.scatterplot(
         data=plsda_df,
@@ -297,11 +328,19 @@ def run_plsda(file_path, group_file, save_dir, group_colors=None, group_order=No
         hue='Group',
         hue_order=groups,
         palette=color_map,
-        s=100, alpha=0.95, edgecolor='black'
+        s=style["marker_size"] * 2.1, alpha=0.95, edgecolor='black'
     )
 
 
     # 95% confidence ellipses using the same colors
+    bounds = [
+        (
+            float(np.nanmin(plsda_df["Component 1"])),
+            float(np.nanmax(plsda_df["Component 1"])),
+            float(np.nanmin(plsda_df["Component 2"])),
+            float(np.nanmax(plsda_df["Component 2"])),
+        )
+    ]
     for group in groups:
         color = color_map[group]
         subset = plsda_df.loc[plsda_df['Group'] == group, ['Component 1', 'Component 2']]
@@ -315,35 +354,39 @@ def run_plsda(file_path, group_file, save_dir, group_colors=None, group_order=No
                 facecolor=color, edgecolor=color, alpha=0.18, linewidth=1
             )
             ax.add_patch(ellipse)
+            bounds.append(_ellipse_bounds(cov, center, nstd=1.96))
         except Exception:
             pass
 
-    # Expand limits slightly for clarity
-    xlims, ylims = ax.get_xlim(), ax.get_ylim()
-    ax.set_xlim(xlims[0] - (xlims[1] - xlims[0]) * 0.1,
-                xlims[1] + (xlims[1] - xlims[0]) * 0.1)
-    ax.set_ylim(ylims[0] - (ylims[1] - ylims[0]) * 0.1,
-                ylims[1] + (ylims[1] - ylims[0]) * 0.1)
+    # Expand limits to include all points and full ellipse extents
+    x_min = min(b[0] for b in bounds)
+    x_max = max(b[1] for b in bounds)
+    y_min = min(b[2] for b in bounds)
+    y_max = max(b[3] for b in bounds)
+    x_span = max(x_max - x_min, 1e-9)
+    y_span = max(y_max - y_min, 1e-9)
+    ax.set_xlim(x_min - 0.08 * x_span, x_max + 0.08 * x_span)
+    ax.set_ylim(y_min - 0.08 * y_span, y_max + 0.08 * y_span)
 
     ev1 = explained_variance[0] if len(explained_variance) > 0 else 0.0
     ev2 = explained_variance[1] if len(explained_variance) > 1 else 0.0
-    plt.xlabel(f"Component 1 ({ev1:.1f}% variance)", labelpad=12)
-    plt.ylabel(f"Component 2 ({ev2:.1f}% variance)", labelpad=12)
-    plt.title("PLS-DA Scores Plot", fontsize=14)
+    plt.xlabel(f"Component 1 ({ev1:.1f}% variance)", labelpad=12, fontsize=style["label_size"])
+    plt.ylabel(f"Component 2 ({ev2:.1f}% variance)", labelpad=12, fontsize=style["label_size"])
+    plt.title("PLS-DA Scores", fontsize=style["title_size"])
     # --- Legend (outside right, non-cropped on save) ---
     fig = plt.gcf()
     ax.legend(
         bbox_to_anchor=(1.02, 1),
         loc="upper left",
-        fontsize=12,
-        title_fontsize=12,
+        fontsize=style["legend_size"],
+        title_fontsize=style["legend_size"],
         borderaxespad=0.0,
         frameon=False,
     )
 
     # --- Bottom stats line ---
     extra_text = (
-        f"5-fold CV | Opt. comps: {optimal_components} | "
+        f"{_safe_cv_splits(len(X_scaled), preferred=5)}-fold CV | Opt. comps: {optimal_components} | "
         f"R² = {r2_true:.3f} | Q² = {q2_value:.3f} | "
         f"Accuracy = {avg_acc:.3f} | p (100 perm) = {p_value:.3g}"
     )
@@ -352,26 +395,35 @@ def run_plsda(file_path, group_file, save_dir, group_colors=None, group_order=No
         0.5, -0.18, extra_text,
         ha="center", va="top",
         transform=ax.transAxes,
-        fontsize=11, color="dimgray"
+        fontsize=style["tick_size"], color="dimgray"
+    )
+    interpretation_text, interpretation_color = _plsda_interpretation(q2_value, p_value)
+    ax.text(
+        0.5, -0.26, interpretation_text,
+        ha="center", va="top",
+        transform=ax.transAxes,
+        fontsize=max(style["tick_size"] - 1, 9),
+        color=interpretation_color,
     )
 
-    ax.set_aspect("equal", adjustable="datalim")
+    ax.set_aspect("auto")
 
     # Add full rectangular border
     for spine in ax.spines.values():
         spine.set_visible(True)
-        spine.set_linewidth(1.0)
+        spine.set_linewidth(style["line_width"])
         spine.set_color("black")
 
     # --- Adjust and save properly ---
-    fig.subplots_adjust(right=0.80)
+    fig.subplots_adjust(right=0.84, bottom=0.28)
     fig.savefig(
         save_dir / "PLSDA_2D.png",
-        dpi=100,
+        dpi=style["dpi"],
         bbox_inches="tight",
         pad_inches=0.3,
         facecolor="white",
     )
+    fig.savefig(save_dir / "PLSDA_2D.svg", bbox_inches="tight", pad_inches=0.3, facecolor="white")
     plt.close(fig)
 
 
@@ -429,7 +481,8 @@ def run_plsda(file_path, group_file, save_dir, group_colors=None, group_order=No
         plot_vip(vip_scores, X.columns, save_dir,
                  filename=f"VIP_scores_plot_top{topn}.png",
                  top_n=topn,
-                 annotations=annotations)
+                 annotations=annotations,
+                 style=style)
 
     # === X-loadings with metadata (traceability) ===
     x_load = pd.DataFrame(pls.x_loadings_[:, :2], index=X.columns, columns=["Comp1_loading", "Comp2_loading"])

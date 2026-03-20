@@ -54,20 +54,20 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
 
         # Implausible classes
         if val.startswith(("NoAbbrev:",
-                           "ACer ", "Car ", "CE ", "Cer", "CerP ", "DGCC ", "DGMG ", "MGMG ", "DGTA ", "DGTS ", "MGTS ", "FAG ", "FAHFA ", "GlcADG ", 
-                           "GlcCer", "HC ", "HexCer", "HexSPB ", "PS-NAc ", "MIPC ", "M(IP)2C ", "IPC ", "NAT ", "PIP ", "PIM ", "PnC ", "PnE ", "SCer ", "SHexCer ", 
-                           "PI ", "LSM ", "SPB ", "SPBP ", "ST ", "SulfateHexSPB ", "PE-Cer ", "CerPE ", "PI-Cer ", "CerPI ", "NAE ", "BMP ", "LPS ", "WE ", "NAT ", 
-                           "FAL ", "LNAPE ", "NAPE ",  "PEth ", 'PEtOH ', 'PMeOH ', "Am-Hex-PE ", "PK ", "SQMG ", "LSQMG ", "PE-N[FA] ", "PS-NAc ", "PT ")): 
+                           "ACer ", "Car ", "CE ", "Cer", "CerP ", "DGCC ", "Hex2MG ", "HexMG ", "DGTA ", "DGTS ", "MGTS ", "FAG ", "FAHFA ", "GlcADG ", 
+                           "GlcCer", "HC ", "HexCer ", "Hex2Cer ", "HexSPB ", "MIPC ", "M(IP)2C ", "IPC ", "NAT ", "PIP ", "PIM ", "PIM1 ", "PIM2 ", "PIM3 ", "PIM4 ", "PIM5 ", "PIM6 ", "PnC ", "PnE ", "SCer ", "SHexCer ", 
+                           "PI ", "LSM ", "SPB ", "SPBP ", "ST ", "SulfateHexSPB ", "PE-Cer ", "CerPE ", "PI-Cer ", "CerPI ", "BMP ", "LPS ", "WE ", "NAT ", 
+                           "Am-Hex-PE ", "PK ", "PT ")): 
             # ACer = Acyl ceramides (acylated ceramides) (human, animals)
             # Car = Acyl carnitines (human, animals)
             # CE = cholesteryl ester, esterified sterols (Human, animal)
             # Cer = ceramides (Human, animal, plant)
             # CerP = Ceramide phosphates (Human, animals)
             # DGCC = Diacylglyceryl-carboxyhydroxymethylcholine (algae)
-            # DGDG = Digalactosyl diacylglycerol (Plants, algae)
-            # DGMG = Digalactosyl monoacylglycerol (Plants, algae)
-            # MGDG = Monogalactosyl diacylglycerol (Plants, algae)
-            # MGMG = Monogalactosyl monoacylglycerol  (plants)
+            # Hex2DG = Digalactosyl diacylglycerol (Plants, algae)
+            # Hex2MG = Digalactosyl monoacylglycerol (Plants, algae)
+            # HexDG = Monogalactosyl diacylglycerol (Plants, algae)
+            # HexMG = Monogalactosyl monoacylglycerol  (plants)
             # DGTA = Betaine lipids (diacylglyceryl-hydroxymethyl-trimethyl-alanine) (Algae, bacteria)
             # DGTS = Betaine lipids (diacylglyceryl-trimethyl-homoserine) (Algae, some plants, some bacteria)
             # MGTS = Betaine lipids (monoacylglyceryl-trimethyl-homoserine) (Algae, some plants, some bacteria)
@@ -105,7 +105,7 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
             # NAT = Acyl taurines (Human, animal)
             # FOH = Fatty alcohols (animals, plants, fungi, algae, protists, some bacteria - actinobacteria, marine bacteria, some Streptomyces spp., cyanobacteria, some some Shewanella and Vibrio species, Planctomycetes, Myxobacteria)
             # LNAPE =  N-acyl-lysophosphatidylethanolamine
-            # NAPE =  N-acyl-phosphatidylethanolamine
+            # NAPE =  N-acyl-phosphatidylethanolamine (exist in E. coli)
             # PEtH or PEtOH =  Diacylglycerophosphoethanols (Phosphatidylethanol) (not physiological; marker of ethanol exposure in organisms that contain phospholipase D)
             # PMeOH =  Diacylglycerophosphomethanols (Phosphatidylmethanol) (not physiological; marker of ethanol exposure in organisms that contain phospholipase D)
             # PE-NMe = diacylglycerophospho-N-methylethanolamine, also known as PMME - phosphatidyl-N-monomethylethanolamine (Bacteria; Phosphatidylethanolamine methylation pathway (PE → PMME → PDME → PC))
@@ -122,11 +122,23 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
 
             remove_flag = True
             add_removed_row(row, "Implausible classes")  
+
+        # ------------------------------------------
+        # OPTIONAL FOR SPECIFIC BACTERIA
+        # ------------------------------------------
+        # FOR E. coli
+        if val.startswith(("NoAbbrev:",
+                           "Hex2DG ", "Hex2MG ", "HexMG ", "HexDG ", "Hex(", "HexCer ", "WD ", "WE ")): 
+                remove_flag = True
+                add_removed_row(row, "Implausible E. coli classes")  
+        if val.startswith(("PC 28:")): 
+                remove_flag = True
+                add_removed_row(row, "Implausible E. coli lipids")
                 
         # === Impossible plasmalogens ===
         if (" O-" in val or # Plasmalogens and ether-linked lipids in general are not found in Gram-negatives. They can only be found in Gram-positives and archea.
             "DG O-" in val or "DG dO-" in val or " dO-" in val or "MG O-" in val or
-            "DGDG O-" in val or "DGMG O-" in val or "MGDG O-" in val or "MGMG O" in val or
+            "Hex2DG O-" in val or "Hex2MG O-" in val or "HexDG O-" in val or "HexMG O" in val or
             "PE-NMe2 O-" in val or ("O-" in val and ";" in val) or
             "O-14:1" in val or 
             "O-23:" in val or "O-25:" in val or
@@ -165,10 +177,8 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
                 " 13:" in val or                
                 "_3:" in val or "_4:" in val or "_5:" in val or
                 "_6:" in val or "_7:" in val or "_8:" in val or
-                "_9:" in val or "_11:" in val or "_13:" in val or
-                ":4" in val or ":5" in val or ":6" in val or                        # PUFA are not found in bacteria
-                ":7" in val or ":8" in val or ":9" in val or                        # PUFA are not found in bacteria
-                ":10" in val or ":11" in val or ":12" in val or                     # PUFA are not found in bacteria
+                "_9:" in val or "_11:" in val or "_13:" in val or                   # PUFA are not found in bacteria
+                ":11" in val or ":12" in val or                                     # PUFA are not found in bacteria
                 ":13" in val or ":14" in val or ":15" in val or                     # PUFA are not found in bacteria
                 
                 "12:0;O" in val or
@@ -181,18 +191,14 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
                 "13:0_20:" in val or   
                 
                 "14:0;O2" in val or "14:0;O3" in val or "14:0;O4" in val or                                                      
-                "14:0;O" in val or "14:1;O" in val or
-                "14:0_19:" in val or 
                 "14:2" in val or "14:3" in val or  "14:4" in val or
                 
                 "13:0;O" in val or 
                   
                 "14:0;O2" in val or "14:0;O3" in val or "14:0;O4" in val or                                                 
-                "14:0_19:" in val or 
                 "14:1;O2" in val or "14:1;O3" in val or "14:1;O4" in val or  
                 "14:2" in val or "14:3" in val or  "14:4" in val or
                 
-                "15:1;O" in val or
                 "15:1_13:" in val or
                 "15:1_21:" in val or "15:1_22:" in val or
                 
@@ -200,17 +206,15 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
                 "15:2" in val or "15:3" in val or "15:4" in val or
                 "16:4" in val or "16:5" in val or "16:6" in val or
                 
-                "17:0_12:" in val or "17:0_13:" in val or
+                "17:0_13:" in val or
                 "17:0_21:" in val or
-                "17:1;O" in val or "17:1_12:" in val or "17:1_13:" in val or
-                "17:2" in val or "17:3" in val or "17:4" in val or
+                "17:1_12:" in val or "17:1_13:" in val or
+                "17:3" in val or "17:4" in val or
                 
                 "18:5" in val or "18:6" in val or
                 
                 "19:0_12:" in val or "19:0_13:" in val or
-                "19:1;O" in val or
-                "19:1_12:" in val or "19:1_13:" in val or "19:1_14:" in val or
-                "19:1_15:" in val or "19:1_17:" in val or
+                "19:1_12:" in val or "19:1_13:" in val or
                 "19:3" in val or
                 
                 "21:0_12:" in val or "21:0_13:" in val or "21:0_14:" in val or
@@ -224,6 +228,7 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
                 
                 "23:" in val or
                 
+                "24:1;O" in val or "24:2;O" in val or 
                 "24:3" in val or "24:4" in val or "24:5" in val or "24:6" in val or "24:7" in val or
                 
                 "25:" in val or
@@ -231,6 +236,7 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
                 ("26:" in val and "_" in val) or ("26:" in val and "/" in val) or
                 "26:3" in val or "26:4" in val or "26:5" in val or
                 "26:6" in val or "26:7" in val or "26:8" in val or
+                "26:1;O" in val or "26:2;O" in val or "26:3;O" in val or 
                 
                 ("27:" in val and "_" in val) or ("27:" in val and "/" in val) or 
                 
@@ -443,9 +449,9 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
             add_removed_row(row, "Lipids with more than 14 double bonds") 
                 
         # Rare fatty acyls
-        if val.startswith(("FOH ", "FAL ", "HC ", "FAG ", "SFE ")): 
+        if val.startswith(("FOH ", "FAL ", "HC ", "FAG ", "SFE ", "NAx ", "NA ", "NAE ")): 
             if (any(f";O{i}" in val for i in range(6, 100)) or
-                any(f"{i}:" in val for i in (3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59))
+                any(f"{i}:" in val for i in (3, 5, 7, 9, 11, 13, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59))
                 ):
                 remove_flag = True
                 add_removed_row(row, "Rare FA with too many extra oxygens or OCFA")                
@@ -477,7 +483,7 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
             if (any(f";O{i}" in val for i in range(4, 100)) or
             any(f" {i}:" in val for i in (3, 5, 7, 9, 11, 12, 13, 15, 17, 19, 21, 23, 25, 27, 28, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47)) or
             any(f" {i}:" in val for i in range (47, 100)) or
-            any(f" :{i}" in val for i in range(8, 100)) or
+            any(f" :{i}" in val for i in range(5, 100)) or
             any(f"/{i}:" in val for i in (3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25)) or
             any(f"_{i}:" in val for i in (3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25)) or
             any(f"_{i}:" in val for i in range(26, 100)) or
@@ -487,10 +493,10 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
                 add_removed_row(row, "Odd HexCer")
                             
         #Acylglycerols and fatty acyls with too many oxygens, nitrogens, or double bonds, OR too few carbons (too small)                     
-        if val.startswith(("Car ", "CAR ", "CoA ", "COA ", "Coa ", "FAL ", "FOH ", "FAG ", "MG ", "TG ", "DG ")): 
+        if val.startswith(("Car ", "CAR ", "CoA ", "COA ", "Coa ", "FAL ", "FOH ", "FAG ", "MG ", "DG ")): 
             if (any(f";O{i}" in val for i in range(3, 100)) or
                 any(f";N{i}" in val for i in range(3, 100)) or
-                any(f" {i}:" in val for i in (3, 5, 7, 9, 11, 13, 25, 27, 28, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51)) or
+                any(f" {i}:" in val for i in (3, 5, 7, 9, 11, 13, 25, 27, 39, 41, 43, 45, 47, 49, 51)) or
                 any(f"_{i}:" in val for i in (3, 5, 7, 9, 11, 13, 25, 27, 28, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51)) or
                 any(f"/{i}:" in val for i in (3, 5, 7, 9, 11, 13, 25, 27, 28, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51))
                 ):
@@ -498,7 +504,7 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
                 add_removed_row(row, "Odd acylGlycerols or FA")
                 
         #Car (Short- and medium-chain acylcarnitines (≤C14) could be encountered in bacteria, but generally only if they are exposed to external carnitine or supplemented media (e.g., in host environments or specialized growth media. Long- and very-long-chain acylcarnitines (≥C18) are not plausible bacterial products)                  
-        if val.startswith(("Car ", "CoA ")): 
+        if val.startswith(("Car ", "CoA ", "CAR ")): 
             if (any(f" {i}:" in val for i in range(1, 11)) or  
                 any(f" {i}:" in val for i in range(21, 100)) or  
                 any(f";O{i}" in val for i in range(1, 100)) or  
@@ -519,10 +525,10 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
                 add_removed_row(row, "Odd free FA")
             
         #NAs or NAEs with too many or too few carbons, too many double bonds, and too many nitrogens or oxygens            
-        if val.startswith(("NA ", "NAE ", "NAT ")):
+        if val.startswith(("NA ", "NAx ", "NAE ", "NAT ")):
             if (any(f" {i}:" in val for i in range(27, 100)) or  
-                any(f" {i}:" in val for i in (3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 26, 27)) or  
-                any(f":{i}" in val for i in range(6, 100)) or
+                any(f" {i}:" in val for i in (3, 5, 7, 9, 11, 13, 21, 23, 25, 26, 27, 28, 29)) or  
+                any(f":{i}" in val for i in range(4, 100)) or
                 any(f";O{i}" in val for i in range(3, 100)) or
                 any(f";N{i}:" in val for i in range(4, 100))                
                 ):
@@ -532,7 +538,7 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
         #FAHFA, WE with too many or too few carbons, too many double bonds, and too many nitrogens or oxygens            
         if val.startswith(("FAHFA ", "WE ")):
             if (any(f" {i}:" in val for i in range(49, 100)) or  
-                any(f":{i}" in val for i in range(6, 100)) or
+                any(f":{i}" in val for i in range(5, 100)) or
                 any(f";O{i}" in val for i in range(4, 100)) or
                 any(f";N{i}:" in val for i in range(4, 100))                
                 ):
@@ -542,55 +548,68 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
         #Hydroxylated CEs           
         if val.startswith(("CE ")):
             if (any(f";O{i}" in val for i in range(1, 100)) or
-                any(f" {i}:" in val for i in (19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59)) or
+                any(f" {i}:" in val for i in (21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59)) or
                 any(f" {i}" in val for i in ("24:5", "24:1;O3", "24:2;O3", "24:3;O"))               
                 ):
                 remove_flag = True
                 add_removed_row(row, "Odd CE")
                         
         # Lipids with one fatty acyl and too few or too many carbons or too many double bonds
-        if val.startswith(("LPA ", "LPE ", "LPC ", "LPI ", "LPS ", "LPG ", "LPT ", "MG ", "FA ", "FOH ", "FAL ", "FAG ", "CE ", "ST ", "SFE ", "Car ", "CAR ")):
+        if val.startswith(("LPA ", "LPE ", "LPC ", "LPI ", "LPS ", "LPG ", "LPT ", "MG ", "FA ", "FOH ", "FAL ", "FAG ", "CE ", "SFE ", "Car ", "CAR ")):
             if (any(f" {i}:" in val for i in (1, 3, 5, 7, 9, 11, 13, 25, 27, 28, 29, 31, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59)) or
                 any(f" {i}:" in val for i in range(30, 100)) or  
                 any(f" {i}:" in val for i in range(1, 11)) or
                 any(f" O-{i}:" in val for i in range(1, 11)) or
-                any(f" O-{i}:" in val for i in (1, 3, 5, 7, 9, 11, 13, 19, 21, 23, 25, 27, 28, 29, 31, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59)) or  
+                any(f" O-{i}:" in val for i in (1, 3, 5, 7, 9, 11, 13, 21, 23, 25, 27, 28, 29, 31, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59)) or  
                 any(f" O-{i}:" in val for i in range(30, 100)) or
-                any(f":{i}" in val for i in range(10, 100))                 
+                any(f":{i}" in val for i in range(3, 100))                 
                 ):
                 remove_flag = True
                 add_removed_row(row, "Lipids with one fatty acyl and too few or too many carbons or too many double bonds")
                         
         # Lipids with 2 fatty acyls (or more) and too few carbons
-        if val.startswith(("FAHFA ", "WE ", "PA ", "PE ", "PE-NMe ", "PE-NMe2 ", "PnE ", "PC ", "PI ", "PT ", "PIP", "PS ", "PG ", "DG ", "SM ", "Cer ", "TG ", "CerP ", "PE-Cer ", "PI-Cer ", "BMP ", "HBMP ", "WE ", "PIM")):
+        if val.startswith(("FAHFA ", "WE ", "PA ", "PE ", "PE-NMe ", "PE-NMe2 ", "PnE ", "PC ", "PI ", "PT ", "PIP", "PS ", "PG ", "DG ", "SM ", "Cer ", "CerP ", "PE-Cer ", "PI-Cer ", "BMP ", "HBMP ", "WE ", "PIM")):
             if (any(f" O-{i}:" in val for i in range(0, 11)) or  
-                any(f" O-{i}:" in val for i in (1, 3, 5, 7, 9, 11, 13, 19, 21, 23, 25, 27, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59)) or    
+                any(f" O-{i}:" in val for i in (1, 3, 5, 7, 9, 11, 13, 21, 23, 25, 27, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59)) or    
                 any(f"/{i}:" in val for i in range(0, 11)) or  
                 any(f" {i}:" in val for i in range(0, 11)) or 
-                any(f" {i}:" in val for i in (1, 3, 5, 7, 9, 11, 13, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59)) or  
+                any(f" {i}:" in val for i in (1, 3, 5, 7, 9, 11, 13, 43, 45, 47, 49, 51, 53, 55, 57, 59)) or  
                 any(f"_{i}:" in val for i in range(0, 11))
                 ):
                 remove_flag = True
                 add_removed_row(row, "Lipids with 2 fatty acyls or more and too few carbons") 
                         
         # Lipids with 2 fatty acyls and too many carbons
-        if val.startswith(("FAHFA ", "WE ", "PA ", "PE ", "PE-NMe ", "PE-NMe2 ", "PE-N[FA]", "PEth", "PnE ", "PC ", "PI ", "PT ", "PIP", "PS ", "PG ", "DG ", "SM ", "Cer ", "CerP ", "PE-Cer ", "PI-Cer ", "IPC ", "BMP ", "HBMP ", "WE ", "PIM")):
-            if (any(f" {i}:" in val for i in range(50, 100)) or 
+        if val.startswith(("FAHFA ", "WE ", "PE-NMe ", "PE-NMe2 ", "PEth", "PnE ", "PC ", "PI ", "PT ", "PIP", "DG ", "SQDG ", "SM ", "Cer ", "CerP ", "PE-Cer ", "PI-Cer ", "IPC ", "BMP ", "HBMP ", "WE ", "PIM")):
+            if (any(f" {i}:" in val for i in range(44, 100)) or 
                 any(f" {i}:" in val for i in (13, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81)) or 
                 any(f" O-{i}:" in val for i in range(48, 100)) or
                 any(f";O{i}" in val for i in range(3, 100)) or
-                any(f":{i}" in val for i in range(10, 100)) or
+                any(f":{i}" in val for i in range(5, 100)) or
                 any(f"/{i}:" in val for i in range(27, 100)) or
                 any(f"_{i}:" in val for i in range(27, 100))      
                 ):
                 remove_flag = True
                 add_removed_row(row, "Lipids with 2 fatty acyls and too many carbons")  
+                
+        # Lipids with 2 fatty acyls and too many carbons
+        if val.startswith(("PE ", "PE-N[FA]", "NAPE ", "PS ", "PG ", "PA ")):
+            if (any(f" {i}:" in val for i in range(62, 100)) or 
+                any(f" {i}:" in val for i in (13, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81)) or 
+                any(f" O-{i}:" in val for i in range(48, 100)) or
+                any(f";O{i}" in val for i in range(3, 100)) or
+                any(f":{i}" in val for i in range(5, 100)) or
+                any(f"/{i}:" in val for i in range(27, 100)) or
+                any(f"_{i}:" in val for i in range(27, 100))      
+                ):
+                remove_flag = True
+                add_removed_row(row, "Lipids with 2 or 3 fatty acyls (specific phospholipids) and too many carbons")  
         
         # Lipids with 2 fatty acyls and odd chains
         if val.startswith(("FAHFA ", "WE ", "PE-NMe ", "PE-NMe2 ", "PE-N[FA]", "PnE ", "PEth", "PI ", "PT ", "PIP", "PS ", "SM ", "IPC ", "BMP ", "HBMP ", "WE ", "PIM")):
             if (any(f";O{i}" in val for i in range(2, 100)) or
-                any(f" {i}:" in val for i in (27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 46, 47, 48, 49, 50)) or 
-                any(f":{i}" in val for i in range(8, 100)) or  
+                any(f" {i}:" in val for i in (27, 29, 37, 39, 41, 43, 45, 46, 47, 48, 49, 50)) or 
+                any(f":{i}" in val for i in range(5, 100)) or  
                 any(f"_{i}:" in val for i in (11, 12, 13, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50))  
                 ):
                 remove_flag = True
@@ -599,7 +618,7 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
         #WE with odd compositions            
         if val.startswith(("WE ", "WD ")):
             if (any(f" {i}:" in val for i in range(49, 100)) or  
-                any(f" {i}:" in val for i in (3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49))               
+                any(f" {i}:" in val for i in (3, 5, 7, 9, 11, 13, 21, 23, 25, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49))               
                 ):
                 remove_flag = True
                 add_removed_row(row, "Odd WE")
@@ -608,19 +627,19 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
         if val.startswith(("PIP ", "PIP1 ", "PIP2 ", "PIP3 ", "PIP4 ", "PIP5 ")):
             if (any(f" {i}:" in val for i in range(50, 100)) or 
                 any(f" {i}:" in val for i in range(1, 14)) or 
-                any(f" {i}:" in val for i in (13, 15, 17, 19, 21, 23, 25, 27, 28, 29, 31, 33, 35, 37, 41, 43, 45, 47, 49, 51)) or 
+                any(f" {i}:" in val for i in (13, 21, 23, 25, 27, 28, 29, 31, 33, 35, 37, 41, 43, 45, 47, 49, 51)) or 
                 any(f";O{i}" in val for i in range(2, 100)) or
-                any(f":{i}" in val for i in range(8, 100)) or
+                any(f":{i}" in val for i in range(5, 100)) or
                 any(f"/{i}:" in val for i in range(27, 100)) or
                 any(f"_{i}:" in val for i in range(27, 100))      
                 ):
                 remove_flag = True
                 add_removed_row(row, "Unreasonable PIP")   
                 
-        if val.startswith(("DG ")):
-            if (any(f" :{i}" in val for i in range(6, 200)) or      
+        if val.startswith(("DG ", "SQDG ", "HexDG ", "Hex2DG ")):
+            if (any(f" :{i}" in val for i in range(4, 200)) or      
                 any(f" {i}:" in val for i in range(45, 100)) or
-                any(f" {i}:" in val for i in (13, 15, 17, 19, 21, 23, 25, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89))    
+                any(f" {i}:" in val for i in (13, 21, 23, 25, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89))    
                 ):
                 remove_flag = True
                 add_removed_row(row, "Unreasonable DG")                  
@@ -628,35 +647,46 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
         # Lipids with 3 fatty acyls and too few carbons
         if val.startswith(("TG ", "MLCL ")):
             if (any(f" {i}:" in val for i in range(27, 29)) or      
-                any(f" {i}:" in val for i in (13, 21, 23, 25, 27, 29, 41, 43, 45, 47, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75)) or   
+                any(f" {i}:" in val for i in (13, 21, 23, 25, 27, 29, 41, 59, 61, 63, 65, 67, 69, 71, 73, 75)) or   
                 any(f"/{i}:" in val for i in range(2, 11)) or
                 any(f"_{i}:" in val for i in range(2, 11)) or
                 any(f"_{i}:" in val for i in (13, 21, 23, 25, 27, 29, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75)) or 
                 any(f"/{i}:" in val for i in (13, 21, 23, 25, 27, 29, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75)) or 
-                any(f":{i}" in val for i in range(10, 50)) or
-                any(f";O{i}" in val for i in range(4, 20))       
+                any(f":{i}" in val for i in range(6, 50))   
                 ):
                 remove_flag = True 
                 add_removed_row(row, "Lipids with 3 fatty acyls and too few carbons")
                                 
         # Lipids with 3 fatty acyls and too many carbons
-        if val.startswith(("TG ", "MLCL ")):
-            if (any(f" {i}:" in val for i in range(70, 200)) or      
+        if val.startswith(("TG ")):
+            if (any(f" {i}:" in val for i in range(70, 200)) or    
+                any(f" {i}:" in val for i in range(27, 42)) or       
                 any(f"/{i}:" in val for i in range(27, 130)) or
                 any(f"_{i}:" in val for i in range(27, 130)) or
-                any(f" O-{i}:" in val for i in (13, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91))       
+                any(f" O-{i}:" in val for i in (13, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91)) or
+                any(f";O{i}" in val for i in range(2, 20))      
                 ):
                 remove_flag = True
                 add_removed_row(row, "Lipids with 3 fatty acyls and too many carbons") 
                 
+        # Lipids with 3 fatty acyls and too many carbons
+        if val.startswith(("MLCL ")):
+            if (any(f" {i}:" in val for i in range(70, 200)) or      
+                any(f"/{i}:" in val for i in range(27, 130)) or
+                any(f"_{i}:" in val for i in range(27, 130)) or
+                any(f" O-{i}:" in val for i in (13, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41))       
+                ):
+                remove_flag = True
+                add_removed_row(row, "Lipids with 3 fatty acyls and too many carbons") 
+
         # Lipids with 4 fatty acyls and too few carbons
         if val.startswith(("CL ")):
             if (any(f" {i}:" in val for i in range(2, 11)) or     
                 any(f"/{i}:" in val for i in range(2, 13)) or
                 any(f"_{i}:" in val for i in range(2, 13)) or  
-                any(f":{i}" in val for i in range(10, 50)) or
+                any(f":{i}" in val for i in range(9, 50)) or
                 any(f";O{i}" in val for i in range(3,20)) or
-                any(f" {i}:" in val for i in (15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89))      
+                any(f" {i}:" in val for i in (23, 25))      
                 ):
                 remove_flag = True 
                 add_removed_row(row, "Lipids with 4 fatty acyls and too few carbons")
@@ -778,7 +808,6 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
                 "20:0;O2/20:0;O"
                 'PnC ',
                 'PnE ',
-                'PS-NAc ',
                 "CerP 46:4;O3",
                 "CerP 46:2;O3",
                 "WE 22:",

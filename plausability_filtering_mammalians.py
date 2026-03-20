@@ -54,7 +54,7 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
         
         # Implausible classes
         if val.startswith(("NoAbbrev:",
-                           "FAG ", "HC ", "DGCC ", "DGDG ", "DGMG ", "MGDG ", "LSQMG ", "DGTA ", "DGTS ", "MGTS ", "GlcADG", "MGMG ", "SQDG ", "SQMG ", 
+                           "FAG ", "HC ", "DGCC ", "Hex2DG ", "Hex2MG ", "HexDG ", "LSQMG ", "DGTA ", "DGTS ", "MGTS ", "GlcADG", "HexMG ", "SQDG ", "SQMG ", 
                            "Glc-GP ", "PIM ", "PnC ", "PnE ", "Am-Hex-PE ", "PE-NMe ", "PE-NMe2 ", "PS-NAc ", "LPT ", "PT ", "PE-N[FA] ", "PIM1 ", "PIM2 ", "PIM3 ", "PIM4 ", "PIM5 ",
                            "M(IP)2C ", "MIPC ", "IPC ", "PE-Cer ", "CerPE ", "PI-Cer ", "CerPI ", "SulfateHexSPB ", 
                            "SL ", "PK ", "SFE ", "DG O-")): 
@@ -62,15 +62,15 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
             # FAG = Fatty glycosides (Plants, microbes)
             # HC = Hydrocarbons
             # DGCC = Diacylglyceryl-carboxyhydroxymethylcholine (algae)
-            # DGDG = Digalactosyl diacylglycerol (Plants, algae)
-            # DGMG = Digalactosyl monoacylglycerol (Plants, algae)
-            # MGDG = Monogalactosyl diacylglycerol (Plants, algae)
+            # Hex2DG = Digalactosyl diacylglycerol (Plants, algae)
+            # Hex2MG = Digalactosyl monoacylglycerol (Plants, algae)
+            # HexDG = Monogalactosyl diacylglycerol (Plants, algae)
             # LSQMG = LysoSulfoquinovosyl monoacylglycerols (sulfolipids) (Plants, algae)
             # DGTA = Betaine lipids (diacylglyceryl-hydroxymethyl-trimethyl-alanine) (Algae, bacteria)
             # DGTS = Betaine lipids (diacylglyceryl-trimethyl-homoserine) (Algae, some plants, some bacteria)
             # MGTS = Betaine lipids (monoacylglyceryl-trimethyl-homoserine) (Algae, some plants, some bacteria)
             # GlcADG = Glucuronosyldiacylglycerol (Cyanobacteria)
-            # MGMG = Monogalactosyl monoacylglycerol  (plants)
+            # HexMG = Monogalactosyl monoacylglycerol  (plants)
             # SQDG = Sulfoquinovosyl diacylglycerols (sulfolipids) (Plants, algae, bacteria)
             # SQMG = Sulfoquinovosyl monoacylglycerols (sulfolipids) (plants, algae)
             # Glc-GP = Glycosyl glycerophospholipids (Bacteria)
@@ -104,7 +104,7 @@ def apply_plausability_filter(df, output_folder, pol_tag, mode="MS", row_type="A
                 
         # === Impossible plasmalogens ===
         if ("DG O-" in val or "DG dO-" in val or " dO-" in val or "MG O-" in val or
-            "DGDG O-" in val or "DGMG O-" in val or "MGDG O-" in val or "MGMG O" in val or
+            "Hex2DG O-" in val or "Hex2MG O-" in val or "HexDG O-" in val or "HexMG O" in val or
             "PI O-" in val or "PS O-" in val or
             "PE-NMe2 O-" in val or ("O-" in val and ";" in val) or
             "O-12:1" in val or "O-12:2" in val or "O-12:3" in val or "O-12:4" in val or "O-12:5" in val or "O-12:6" in val or

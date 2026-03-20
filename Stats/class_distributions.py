@@ -20,6 +20,7 @@ from matplotlib.patches import Patch
 import matplotlib.lines as mlines
 
 # >>> use the same utils as other Stats modules
+from Stats.figure_style import build_group_palette as _shared_build_group_palette
 from Stats.utils import load_dataset, prepare_output_dir
 from Stats.utils import _CLASS_ORDER, _CLASS_ORDER_BACTERIA, _CLASS_ORDER_MAMMALIAN, _CLASS_ORDER_FUNGI, _CLASS_GROUP_MAP
 
@@ -234,31 +235,48 @@ def _order_labels(present: list[str], group_order: Optional[list[str]]) -> list[
     return gui + rest
 
 def _build_palette(labels: list[str], group_colors: Optional[dict]) -> dict[str, str]:
-    """Return {group: hex} honoring GUI colors and extending with many distinct colors."""
-    palette = {}
-
-    # 1) start with GUI palette (exact keys only)
-    if isinstance(group_colors, dict):
-        for k, v in group_colors.items():
-            if isinstance(v, str) and re.fullmatch(r"#[0-9A-Fa-f]{6}", v):
-                palette[str(k)] = v.upper()
-
-    # 2) very long fallback wheel (60+ colors)
-    long_wheel = []
-    for cmap_name in ("tab10", "tab20b", "tab20c", "Set3", "Paired", "Accent"):
-        long_wheel += [matplotlib.colors.to_hex(c) for c in plt.get_cmap(cmap_name).colors]
-    # ensure deterministic, unique
-    seen = set()
-    long_wheel = [c.upper() for c in long_wheel if not (c.upper() in seen or seen.add(c.upper()))]
-
-    # 3) assign remaining groups from long wheel
-    i = 0
-    for g in labels:
-        if g not in palette:
-            palette[g] = long_wheel[i % len(long_wheel)]
-            i += 1
-
+    _, palette = _shared_build_group_palette(labels, group_colors=group_colors, group_order=labels)
     return palette
+
+
+def _set_bubble_x_limits(ax: plt.Axes, x_tick_positions: List[float]) -> None:
+    if not x_tick_positions:
+        return
+    ax.set_xlim(x_tick_positions[0] - 0.18, x_tick_positions[-1] + 0.48)
+
+
+def _style_bubble_x_axis(ax: plt.Axes) -> None:
+    ax.tick_params(axis="x", labelsize=20, rotation=90, labelrotation=90, pad=1)
+
+
+def _is_semiquant_dataset(dataset_label: Optional[str], file_path: Optional[str] = None) -> bool:
+    dataset_text = str(dataset_label or "").strip().lower()
+    file_text = str(file_path or "").strip().lower()
+    return "annotated semi-quant" in dataset_text or "semi_quant" in file_text or "semi-quant" in file_text
+
+
+def _intensity_axis_label(dataset_label: Optional[str], file_path: Optional[str] = None) -> str:
+    if _is_semiquant_dataset(dataset_label, file_path):
+        return "Semi-quantitative class abundance\n(normalized intensity x IS concentration)"
+    return "Total (summed) normalized intensity\nfor annotated lipids"
+
+
+def _intensity_axis_label_log(dataset_label: Optional[str], file_path: Optional[str] = None) -> str:
+    if _is_semiquant_dataset(dataset_label, file_path):
+        return "Semi-quantitative class abundance\n(normalized intensity x IS concentration; log scale)"
+    return "Total (summed) normalized intensity\nfor annotated lipids (log scale)"
+
+
+def _percent_axis_label(dataset_label: Optional[str], file_path: Optional[str] = None) -> str:
+    if _is_semiquant_dataset(dataset_label, file_path):
+        return "% of semi-quantitative class abundance\n(normalized intensity x IS concentration)"
+    return "% of total (summed) normalized intensity\nfor annotated lipids"
+
+
+def _percent_axis_label_log(dataset_label: Optional[str], file_path: Optional[str] = None) -> str:
+    if _is_semiquant_dataset(dataset_label, file_path):
+        return "% of semi-quantitative class abundance\n(normalized intensity x IS concentration; log scale)"
+    return "% of total (summed) normalized intensity\nfor annotated lipids (log scale)"
 
 # ============================================================
 # Plotting (Matplotlib, no seaborn)
@@ -306,12 +324,23 @@ def plot_bubble(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[str]
                 title: str = "", figsize=(21, 9),
                 group_order: Optional[list] = None,
                 group_colors: Optional[dict] = None,
-                class_order: Optional[list] = None) -> None:
+                class_order: Optional[list] = None,
+                y_col: str = "Total Intensity",
+                y_label: str = "Total (summed) normalized intensity\nfor annotated lipids",
+                y_max: Optional[float] = None) -> None:
     _ensure_dir(os.path.dirname(out_png))
 
     intensity_df = intensity_df.copy()
+    if intensity_df.empty:
+        return
     if class_order and len(class_order):
-        classes = list(class_order)
+        present_classes = set(intensity_df["Lipid Class"].astype(str))
+        classes = [c for c in class_order if str(c) in present_classes]
+        remaining_classes = [
+            c for c in intensity_df["Lipid Class"].astype(str).unique().tolist()
+            if c not in classes
+        ]
+        classes.extend(remaining_classes)
     else:
         classes = sorted(intensity_df["Lipid Class"].astype(str).unique().tolist())
     intensity_df["Lipid Class"] = pd.Categorical(intensity_df["Lipid Class"], categories=classes, ordered=True)
@@ -343,7 +372,7 @@ def plot_bubble(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[str]
         sub = intensity_df[intensity_df["Group"].astype(str) == g]
         if sub.empty:
             continue
-        ax.scatter(sub["x_jittered"], sub["Total Intensity"],
+        ax.scatter(sub["x_jittered"], sub[y_col],
                    s=sub["Species Count"].map(_size_scale),
                    alpha=0.8, linewidths=0.7,
                     edgecolors="white", color=pal[g], label=str(g))
@@ -358,11 +387,14 @@ def plot_bubble(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[str]
     ax.set_xticks(x_tick_positions)
     ax.set_xticklabels(classes, rotation=90, ha="center", fontsize=14)
     ax.set_xticks(x_tick_positions)
+    _set_bubble_x_limits(ax, x_tick_positions)
     
     ax.tick_params(axis="y", labelsize=13)
 
-    ymax = pd.to_numeric(intensity_df["Total Intensity"], errors="coerce").max()
+    ymax = pd.to_numeric(intensity_df[y_col], errors="coerce").max()
     if not np.isfinite(ymax) or ymax <= 0: ymax = 1.0
+    if y_max is not None and np.isfinite(y_max) and y_max > 0:
+        ymax = min(float(ymax), float(y_max))
     pad = 0.06 * ymax
     ax.set_ylim(-pad, ymax * 1.1)
     # y = 0 line
@@ -382,11 +414,11 @@ def plot_bubble(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[str]
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_visible(True)
     ax.set_xlabel("Lipid Class", fontsize=20, labelpad=15)
-    ax.set_ylabel("Total (summed) normalized intensity\nfor annotated lipids", fontsize=20, labelpad=15)
-    ax.set_title("Lipid class abundance across groups (bubble size = # species)", fontsize=22, pad=15)
+    ax.set_ylabel(y_label, fontsize=20, labelpad=15)
+    ax.set_title(title or "Lipid class abundance across groups (bubble size = # species)", fontsize=22, pad=15)
     
     # --- Axis label and tick font sizes ---
-    ax.tick_params(axis="x", labelsize=20, rotation=90, labelrotation=90)
+    _style_bubble_x_axis(ax)
     ax.tick_params(axis="y", labelsize=20)   
 
     # Alternating background bands (strongest readability gain)
@@ -416,9 +448,9 @@ def plot_bubble(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[str]
         ax.add_artist(leg2)  # add without replacing the first legend
 
     plt.subplots_adjust(
-        left=0.12,   # give y-label breathing room
+        left=0.11,   # tighten the first class toward the y-axis
         right=0.82,  # space for legends
-        bottom=0.25, # rotated class labels
+        bottom=0.23, # bring class labels a bit closer to the x-axis
         top=0.90
     )
     extras = []
@@ -434,12 +466,25 @@ def plot_bubble_log(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[
                 title: str = "", figsize=(21, 9),
                 group_order: Optional[list] = None,
                 group_colors: Optional[dict] = None,
-                class_order: Optional[list] = None) -> None:
+                class_order: Optional[list] = None,
+                y_col: str = "Total Intensity",
+                y_label: str = "Total (summed) normalized intensity\nfor annotated lipids (log scale)") -> None:
     _ensure_dir(os.path.dirname(out_png))
 
     intensity_df = intensity_df.copy()
+    intensity_df[y_col] = pd.to_numeric(intensity_df[y_col], errors="coerce")
+    intensity_df = intensity_df[np.isfinite(intensity_df[y_col]) & intensity_df[y_col].gt(0)].copy()
+    if intensity_df.empty:
+        print(f"[ClassDist] Skipping log bubble plot for '{y_col}' because there are no positive values to display.", flush=True)
+        return
     if class_order and len(class_order):
-        classes = list(class_order)
+        present_classes = set(intensity_df["Lipid Class"].astype(str))
+        classes = [c for c in class_order if str(c) in present_classes]
+        remaining_classes = [
+            c for c in intensity_df["Lipid Class"].astype(str).unique().tolist()
+            if c not in classes
+        ]
+        classes.extend(remaining_classes)
     else:
         classes = sorted(intensity_df["Lipid Class"].astype(str).unique().tolist())
     intensity_df["Lipid Class"] = pd.Categorical(intensity_df["Lipid Class"], categories=classes, ordered=True)
@@ -471,7 +516,7 @@ def plot_bubble_log(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[
         sub = intensity_df[intensity_df["Group"].astype(str) == g]
         if sub.empty:
             continue
-        ax.scatter(sub["x_jittered"], sub["Total Intensity"],
+        ax.scatter(sub["x_jittered"], sub[y_col],
                    s=sub["Species Count"].map(_size_scale),
                    alpha=0.6, linewidths=0.8,
                     edgecolors="white", color=pal[g], label=str(g))
@@ -486,10 +531,11 @@ def plot_bubble_log(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[
     ax.set_xticks(x_tick_positions)
     ax.set_xticklabels(classes, rotation=90, ha="center", fontsize=14)
     ax.set_xticks(x_tick_positions)
+    _set_bubble_x_limits(ax, x_tick_positions)
     
     ax.tick_params(axis="y", labelsize=13)
 
-    ymax = pd.to_numeric(intensity_df["Total Intensity"], errors="coerce").max()
+    ymax = pd.to_numeric(intensity_df[y_col], errors="coerce").max()
     if not np.isfinite(ymax) or ymax <= 0: ymax = 1.0
 
     # # Light-gray horizontal grid
@@ -506,13 +552,13 @@ def plot_bubble_log(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_visible(True)
     ax.set_xlabel("Lipid Class", fontsize=20, labelpad=15)
-    ax.set_ylabel("Total (summed) normalized intensity\nfor annotated lipids (log scale)", fontsize=20, labelpad=15)
-    ax.set_title("Lipid class abundance across groups (bubble size = # species)", fontsize=22, pad=15)
+    ax.set_ylabel(y_label, fontsize=20, labelpad=15)
+    ax.set_title(title or "Lipid class abundance across groups (bubble size = # species)", fontsize=22, pad=15)
     
     # --- Log scale y-axis so that most intense features don't dominate the plot too much
     ax.set_yscale("log")
     # --- Proper log scale limits ---
-    vals = pd.to_numeric(intensity_df["Total Intensity"], errors="coerce")
+    vals = pd.to_numeric(intensity_df[y_col], errors="coerce")
     vals = vals[np.isfinite(vals) & (vals > 0)]
 
     if len(vals) == 0:
@@ -532,7 +578,7 @@ def plot_bubble_log(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[
     ax.set_ylim(ymin_plot, ymax_plot)
     
     # --- Axis label and tick font sizes ---
-    ax.tick_params(axis="x", labelsize=20, rotation=90, labelrotation=90)
+    _style_bubble_x_axis(ax)
     ax.tick_params(axis="y", labelsize=20)   
 
     # Alternating background bands (strongest readability gain)
@@ -562,9 +608,9 @@ def plot_bubble_log(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[
         ax.add_artist(leg2)  # add without replacing the first legend
 
     plt.subplots_adjust(
-        left=0.12,   # give y-label breathing room
+        left=0.11,   # tighten the first class toward the y-axis
         right=0.82,  # space for legends
-        bottom=0.25, # rotated class labels
+        bottom=0.23, # bring class labels a bit closer to the x-axis
         top=0.90
     )
     extras = []
@@ -573,6 +619,7 @@ def plot_bubble_log(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[
     plt.savefig(out_png, dpi=100, bbox_inches="tight", bbox_extra_artists=extras)
     if out_svg:
         plt.savefig(out_svg, dpi=100, bbox_inches="tight", bbox_extra_artists=extras)
+    print(f"[ClassDist] Saved log bubble plot: {out_png}", flush=True)
     plt.close()
     
 # ============================================================
@@ -604,8 +651,9 @@ def run_from_stats(
     
     # === Standard loader — this is how other modules get sample columns and groups
     X, y, feature_meta = load_dataset(file_path, group_file)
+    print(f"Running class distribution with {file_path}.", flush = True)
     if X.empty or feature_meta.empty:
-        raise ValueError("Dataset appears empty or malformed. Check file_path and group_file.")
+        raise ValueError("Dataset appears empty or malformed. Check file_path and group_file.", flush = True)
 
     # === Optional High-confidence feature gate (feature-level)
     mask = _select_confidence_feature_mask(feature_meta, high_conf_only=high_conf_only)
@@ -661,11 +709,18 @@ def run_from_stats(
     per_sample.to_csv(per_sample_csv)
     per_group.to_csv(per_group_csv)
 
+    dataset_label = kwargs.get("dataset_label")
+    intensity_label = _intensity_axis_label(dataset_label, file_path)
+    intensity_label_log = _intensity_axis_label_log(dataset_label, file_path)
+    percent_label = _percent_axis_label(dataset_label, file_path)
+    percent_label_log = _percent_axis_label_log(dataset_label, file_path)
+
     # === Plots
     bar_png = os.path.join(out_dir, f"total_intensity_per_class_grouped_bar_{group_stat}.png")
     bar_svg = os.path.join(out_dir, f"total_intensity_per_class_grouped_bar_{group_stat}.svg")
     plot_grouped_bar(per_group, bar_png, bar_svg,
                  title=f"Total lipid-class abundances per group ({group_stat})",
+                 y_label=intensity_label,
                  group_order=group_order, group_colors=group_colors)
 
     # Bubble input frame
@@ -682,14 +737,65 @@ def run_from_stats(
                 "Species Count": float(scounts.get(cl, 0)),
             })
     bubble_df = pd.DataFrame(records)
+    bubble_pct_df = bubble_df.copy()
+    group_totals = bubble_pct_df.groupby("Group")["Total Intensity"].transform("sum").replace(0, np.nan)
+    bubble_pct_df["Percent of Total Intensity"] = (
+        bubble_pct_df["Total Intensity"].div(group_totals).fillna(0.0) * 100.0
+    )
 
     bub_png = os.path.join(out_dir, f"bubble_total_intensity_per_class_{group_stat}.png")
     bub_svg = os.path.join(out_dir, f"bubble_total_intensity_per_class_{group_stat}.svg")
     plot_bubble(
         bubble_df, bub_png, bub_svg,
         title=f"Lipid class diversity and abundance across groups ({group_stat})",
-        group_order=group_order, group_colors=group_colors, class_order=current_classes
+        group_order=group_order, group_colors=group_colors, class_order=current_classes,
+        y_label=intensity_label,
     )
+
+    bub_pct_png = os.path.join(out_dir, f"bubble_percent_total_intensity_per_class_{group_stat}.png")
+    bub_pct_svg = os.path.join(out_dir, f"bubble_percent_total_intensity_per_class_{group_stat}.svg")
+    plot_bubble(
+        bubble_pct_df, bub_pct_png, bub_pct_svg,
+        title=f"Lipid class abundance across groups (bubble size = # species)",
+        group_order=group_order,
+        group_colors=group_colors,
+        class_order=current_classes,
+        y_col="Percent of Total Intensity",
+        y_label=percent_label,
+    )
+
+    bub_pct_log_png = os.path.join(out_dir, f"bubble_log_percent_total_intensity_per_class_{group_stat}.png")
+    bub_pct_log_svg = os.path.join(out_dir, f"bubble_log_percent_total_intensity_per_class_{group_stat}.svg")
+    plot_bubble_log(
+        bubble_pct_df, bub_pct_log_png, bub_pct_log_svg,
+        title=f"Lipid class abundance across groups (log-scale % of total; bubble size = # species)",
+        group_order=group_order,
+        group_colors=group_colors,
+        class_order=current_classes,
+        y_col="Percent of Total Intensity",
+        y_label=percent_label_log,
+    )
+
+    low_pct_outputs = {}
+    for low_pct_threshold in (10.0, 5.0):
+        bubble_pct_low_df = bubble_pct_df.loc[
+            pd.to_numeric(bubble_pct_df["Percent of Total Intensity"], errors="coerce").lt(low_pct_threshold)
+        ].copy()
+        suffix = f"lt{int(low_pct_threshold)}"
+        bub_pct_low_png = os.path.join(out_dir, f"bubble_percent_total_intensity_per_class_{suffix}_{group_stat}.png")
+        bub_pct_low_svg = os.path.join(out_dir, f"bubble_percent_total_intensity_per_class_{suffix}_{group_stat}.svg")
+        plot_bubble(
+            bubble_pct_low_df, bub_pct_low_png, bub_pct_low_svg,
+            title=f"Lipid class abundance across groups (< {int(low_pct_threshold)}% of total; bubble size = # species)",
+            group_order=group_order,
+            group_colors=group_colors,
+            class_order=current_classes,
+            y_col="Percent of Total Intensity",
+            y_label=percent_label,
+            y_max=low_pct_threshold,
+        )
+        low_pct_outputs[f"bubble_percent_{suffix}_png"] = bub_pct_low_png
+        low_pct_outputs[f"bubble_percent_{suffix}_svg"] = bub_pct_low_svg
     
     bub_png_log = os.path.join(out_dir, f"bubble_log_total_intensity_per_class_{group_stat}.png")
     bub_svg_log = os.path.join(out_dir, f"bubble_log_total_intensity_per_class_{group_stat}.svg")
@@ -697,7 +803,8 @@ def run_from_stats(
     plot_bubble_log(
         bubble_df, bub_png_log, bub_svg_log,
         title=f"Lipid class diversity and log-scale abundance across groups ({group_stat})",
-        group_order=group_order, group_colors=group_colors, class_order=current_classes
+        group_order=group_order, group_colors=group_colors, class_order=current_classes,
+        y_label=intensity_label_log,
     )
 
     return {
@@ -707,6 +814,11 @@ def run_from_stats(
         "bar_svg": bar_svg,
         "bubble_png": bub_png,
         "bubble_svg": bub_svg,
+        "bubble_percent_png": bub_pct_png,
+        "bubble_percent_svg": bub_pct_svg,
+        "bubble_percent_log_png": bub_pct_log_png,
+        "bubble_percent_log_svg": bub_pct_log_svg,
+        **low_pct_outputs,
     }
 
 
@@ -718,6 +830,8 @@ def run_from_collapsed(
     high_conf_only: bool = False,  
     unknown_policy: str = "append",            
     exclude_qc: bool = True,
+    group_order: Optional[list] = None,
+    group_colors: Optional[dict] = None,
 ) -> Dict[str, str]:
     """Pipeline for COLLAPSED DEBUG export + sample_groups_cleaned.csv """
     _ensure_dir(save_dir)
@@ -757,10 +871,23 @@ def run_from_collapsed(
     per_sample.to_csv(per_sample_csv)
     per_group.to_csv(per_group_csv)
 
+    dataset_label = None
+    intensity_label = _intensity_axis_label(dataset_label, collapsed_csv)
+    percent_label = _percent_axis_label(dataset_label, collapsed_csv)
+    percent_label_log = _percent_axis_label_log(dataset_label, collapsed_csv)
+
     # Plots
     bar_png = os.path.join(plot_dir, f"total_intensity_per_class_grouped_bar_{group_stat}.png")
     bar_svg = os.path.join(plot_dir, f"total_intensity_per_class_grouped_bar_{group_stat}.svg")
-    plot_grouped_bar(per_group, bar_png, bar_svg, title=f"Total lipid-class abundances per group ({group_stat})", group_order=None, group_colors=None)
+    plot_grouped_bar(
+        per_group,
+        bar_png,
+        bar_svg,
+        title=f"Total lipid-class abundances per group ({group_stat})",
+        y_label=intensity_label,
+        group_order=group_order,
+        group_colors=group_colors,
+    )
 
     # Bubble
     records = []
@@ -776,14 +903,65 @@ def run_from_collapsed(
                 "Species Count": float(scounts.get(cl, 0)),
             })
     bubble_df = pd.DataFrame(records)
+    bubble_pct_df = bubble_df.copy()
+    group_totals = bubble_pct_df.groupby("Group")["Total Intensity"].transform("sum").replace(0, np.nan)
+    bubble_pct_df["Percent of Total Intensity"] = (
+        bubble_pct_df["Total Intensity"].div(group_totals).fillna(0.0) * 100.0
+    )
 
     bub_png = os.path.join(plot_dir, f"bubble_total_intensity_per_class_{group_stat}.png")
     bub_svg = os.path.join(plot_dir, f"bubble_total_intensity_per_class_{group_stat}.svg")
     plot_bubble(
         bubble_df, bub_png, bub_svg,
         title=f"Lipid class diversity and abundance across groups ({group_stat})",
-        group_order=None, group_colors=None, class_order=current_classes
+        group_order=group_order, group_colors=group_colors, class_order=current_classes,
+        y_label=intensity_label,
     )
+
+    bub_pct_png = os.path.join(plot_dir, f"bubble_percent_total_intensity_per_class_{group_stat}.png")
+    bub_pct_svg = os.path.join(plot_dir, f"bubble_percent_total_intensity_per_class_{group_stat}.svg")
+    plot_bubble(
+        bubble_pct_df, bub_pct_png, bub_pct_svg,
+        title="Lipid class abundance across groups (bubble size = # species)",
+        group_order=group_order,
+        group_colors=group_colors,
+        class_order=current_classes,
+        y_col="Percent of Total Intensity",
+        y_label=percent_label,
+    )
+
+    bub_pct_log_png = os.path.join(plot_dir, f"bubble_log_percent_total_intensity_per_class_{group_stat}.png")
+    bub_pct_log_svg = os.path.join(plot_dir, f"bubble_log_percent_total_intensity_per_class_{group_stat}.svg")
+    plot_bubble_log(
+        bubble_pct_df, bub_pct_log_png, bub_pct_log_svg,
+        title="Lipid class abundance across groups (log-scale % of total; bubble size = # species)",
+        group_order=group_order,
+        group_colors=group_colors,
+        class_order=current_classes,
+        y_col="Percent of Total Intensity",
+        y_label=percent_label_log,
+    )
+
+    low_pct_outputs = {}
+    for low_pct_threshold in (10.0, 5.0):
+        bubble_pct_low_df = bubble_pct_df.loc[
+            pd.to_numeric(bubble_pct_df["Percent of Total Intensity"], errors="coerce").lt(low_pct_threshold)
+        ].copy()
+        suffix = f"lt{int(low_pct_threshold)}"
+        bub_pct_low_png = os.path.join(plot_dir, f"bubble_percent_total_intensity_per_class_{suffix}_{group_stat}.png")
+        bub_pct_low_svg = os.path.join(plot_dir, f"bubble_percent_total_intensity_per_class_{suffix}_{group_stat}.svg")
+        plot_bubble(
+            bubble_pct_low_df, bub_pct_low_png, bub_pct_low_svg,
+            title=f"Lipid class abundance across groups (< {int(low_pct_threshold)}% of total; bubble size = # species)",
+            group_order=group_order,
+            group_colors=group_colors,
+            class_order=current_classes,
+            y_col="Percent of Total Intensity",
+            y_label=percent_label,
+            y_max=low_pct_threshold,
+        )
+        low_pct_outputs[f"bubble_percent_{suffix}_png"] = bub_pct_low_png
+        low_pct_outputs[f"bubble_percent_{suffix}_svg"] = bub_pct_low_svg
 
     return {
         "per_sample_csv": per_sample_csv,
@@ -792,6 +970,11 @@ def run_from_collapsed(
         "bar_svg": bar_svg,
         "bubble_png": bub_png,
         "bubble_svg": bub_svg,
+        "bubble_percent_png": bub_pct_png,
+        "bubble_percent_svg": bub_pct_svg,
+        "bubble_percent_log_png": bub_pct_log_png,
+        "bubble_percent_log_svg": bub_pct_log_svg,
+        **low_pct_outputs,
     }
 
 
@@ -844,4 +1027,4 @@ if __name__ == "__main__":
                 unknown_policy="append"
             )
     for k, v in out.items():
-        print(f"{k}: {v}")
+        print(f"{k}: {v}", flush = True)

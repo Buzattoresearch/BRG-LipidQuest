@@ -941,7 +941,7 @@ def apply_kendrick_filter(
     df,
     mass_column="Neutral mass",
     subclass_column="Lipid Class",
-    kmd_deviation=0.75,
+    kmd_deviation=0.90,
     min_class_size=6,
     output_folder=None,
     pol_tag=""
@@ -1105,6 +1105,8 @@ def run_pipeline(input_csv, output_folder, min_score=70, scoring_module="scoring
         & (
             status.str.startswith("Lipid Species", na=False)
             | status.str.startswith("Target List", na=False)
+            | status.str.startswith("TargetList", na=False)
+            | status.str.startswith("Target List", na=False)
         )
     )
 
@@ -1128,7 +1130,7 @@ def run_pipeline(input_csv, output_folder, min_score=70, scoring_module="scoring
             df_filtered,
             mass_column="Neutral mass",
             subclass_column="Lipid Class",
-            kmd_deviation=0.75,  # decrease to make it more strict
+            kmd_deviation=0.95,  # decrease to make it more strict
             output_folder=output_folder,
             pol_tag=pol_tag
         )
@@ -1317,10 +1319,14 @@ def run_pipeline(input_csv, output_folder, min_score=70, scoring_module="scoring
         """
         out = df.copy()
 
-        # Protect IS
+        # Protect IS and preserve unannotated rows unchanged
         is_is = out.get(ann_type_col, "").astype(str).str.upper().str.strip().eq("IS")
-        work = out.loc[~is_is].copy()
-        keep = out.loc[is_is].copy()
+
+        ann_series = out.get(annotation_col, pd.Series([""] * len(out), index=out.index)).astype(str).str.strip()
+        is_unannotated = ann_series.eq("") | ann_series.str.lower().eq("nan")
+
+        work = out.loc[~is_is & ~is_unannotated].copy()          # only annotated non-IS rows go into collapse
+        keep = out.loc[is_is | is_unannotated].copy()            # IS + unannotated rows are preserved unchanged
 
         # Choose columns for correlation
         use_cols = qc_cols if (qc_cols and len(qc_cols) >= 3) else sample_cols

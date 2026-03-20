@@ -11,14 +11,18 @@
 # Input (per root results folder):
 #   POS/Pos_Final_Annotated.csv
 #   POS/Pos_Final_Unknowns.csv
+#   POS/Pos_Final_Annotated_semi_quant.csv
 #   NEG/Neg_Final_Annotated.csv
 #   NEG/Neg_Final_Unknowns.csv
+#   NEG/Pos_Final_Annotated_semi_quant.csv
 #
 # Output (in <root>):
 #   Final_Annotated_simple_combination.csv
 #   Final_Unknowns_simple_combination.csv
 #   Final_Annotated.csv
 #   Final_Unknowns.csv
+#   Final_Annotated_semi_quant_simple_combination.csv
+#   Final_Annotated_semi_quant.csv
 #
 # Debug outputs (in <root>/debug_merging, best mode only, when both polarities exist):
 #   candidate_pairs.csv   – all RT+mass+annotation-compatible POS–NEG pairs (with iteration)
@@ -101,12 +105,18 @@ def _detect_sample_columns(df: pd.DataFrame, base_cols: List[str]) -> List[str]:
 
 def _load_final_files(root: Path) -> Tuple[
     Optional[pd.DataFrame], Optional[pd.DataFrame],
+    Optional[pd.DataFrame], Optional[pd.DataFrame],
     Optional[pd.DataFrame], Optional[pd.DataFrame]
 ]:
     """
-    Load final annotated/unknowns for POS and NEG.
-    Returns (df_pos_ann, df_neg_ann, df_pos_unk, df_neg_unk), where
-    each can be None if the file is missing.
+    Load final annotated / annotated semi-quant / unknowns for POS and NEG.
+
+    Returns:
+        (
+            df_pos_ann, df_neg_ann,
+            df_pos_ann_semi, df_neg_ann_semi,
+            df_pos_unk, df_neg_unk
+        )
     """
     root = root.resolve()
 
@@ -115,11 +125,19 @@ def _load_final_files(root: Path) -> Tuple[
 
     pos_ann_path = pos_folder / "Pos_Final_Annotated.csv"
     neg_ann_path = neg_folder / "Neg_Final_Annotated.csv"
+
+    pos_ann_semi_path = pos_folder / "Pos_Final_Annotated_semi_quant.csv"
+    neg_ann_semi_path = neg_folder / "Neg_Final_Annotated_semi_quant.csv"
+
     pos_unk_path = pos_folder / "Pos_Final_Unknowns.csv"
     neg_unk_path = neg_folder / "Neg_Final_Unknowns.csv"
 
     df_pos_ann = pd.read_csv(pos_ann_path) if pos_ann_path.exists() else None
     df_neg_ann = pd.read_csv(neg_ann_path) if neg_ann_path.exists() else None
+
+    df_pos_ann_semi = pd.read_csv(pos_ann_semi_path) if pos_ann_semi_path.exists() else None
+    df_neg_ann_semi = pd.read_csv(neg_ann_semi_path) if neg_ann_semi_path.exists() else None
+
     df_pos_unk = pd.read_csv(pos_unk_path) if pos_unk_path.exists() else None
     df_neg_unk = pd.read_csv(neg_unk_path) if neg_unk_path.exists() else None
 
@@ -129,7 +147,11 @@ def _load_final_files(root: Path) -> Tuple[
             f"Expected at least one of:\n  {pos_ann_path}\n  {neg_ann_path}"
         )
 
-    return df_pos_ann, df_neg_ann, df_pos_unk, df_neg_unk
+    return (
+        df_pos_ann, df_neg_ann,
+        df_pos_ann_semi, df_neg_ann_semi,
+        df_pos_unk, df_neg_unk
+    )
 
 
 def _mass_difference_ok(mass_pos: float, mass_neg: float) -> bool:
@@ -329,7 +351,7 @@ def merge_simple(root: Path):
     - Do NOT prefix sample columns (they already have no polarity prefixes)
     - Align sample columns by name and fill missing with NaN
     """
-    df_pos_ann, df_neg_ann, df_pos_unk, df_neg_unk = _load_final_files(root)
+    (df_pos_ann, df_neg_ann, df_pos_ann_semi, df_neg_ann_semi, df_pos_unk, df_neg_unk) = _load_final_files(root) 
     debug_dir = root / "debug_merging"
     debug_dir.mkdir(exist_ok=True)
 
@@ -358,6 +380,32 @@ def merge_simple(root: Path):
     final_cols_ann = [c for c in BASE_ANNOTATED_COLS if c in df_ann.columns] + \
         [c for c in sample_cols_ann if c in df_ann.columns]
     df_ann = df_ann.reindex(columns=final_cols_ann)
+    
+    # Semi-quant annotated
+    semi_frames: List[pd.DataFrame] = []
+
+    if df_pos_ann_semi is not None:
+        df = df_pos_ann_semi.copy()
+        df["UniqueID"] = "P_" + df["UniqueID"].astype(str)
+        semi_frames.append(df)
+
+    if df_neg_ann_semi is not None:
+        df = df_neg_ann_semi.copy()
+        df["UniqueID"] = "N_" + df["UniqueID"].astype(str)
+        semi_frames.append(df)
+
+    if semi_frames:
+        all_cols_semi = sorted({c for df in semi_frames for c in df.columns})
+        aligned_semi = [df.reindex(columns=all_cols_semi) for df in semi_frames]
+        df_ann_semi = pd.concat(aligned_semi, ignore_index=True)
+    else:
+        df_ann_semi = None
+
+    if df_ann_semi is not None:
+        sample_cols_semi = sorted(_detect_sample_columns(df_ann_semi, BASE_ANNOTATED_COLS))
+        final_cols_semi = [c for c in BASE_ANNOTATED_COLS if c in df_ann_semi.columns] + \
+            [c for c in sample_cols_semi if c in df_ann_semi.columns]
+        df_ann_semi = df_ann_semi.reindex(columns=final_cols_semi)
 
     # Unknowns
     unknown_frames: List[pd.DataFrame] = []
@@ -387,11 +435,18 @@ def merge_simple(root: Path):
     df_ann.to_csv(debug_dir / "Final_Annotated_simple_combination.csv",
                   index=False, encoding="utf-8-sig")
 
+    if df_ann_semi is not None:
+        df_ann_semi.to_csv(
+            debug_dir / "Final_Annotated_semi_quant_simple_combination.csv",
+            index=False,
+            encoding="utf-8-sig"
+        )
+
     if df_unk is not None:
         df_unk.to_csv(debug_dir / "Final_Unknowns_simple_combination.csv",
                       index=False, encoding="utf-8-sig")
 
-    return df_ann, df_unk
+    return df_ann, df_ann_semi, df_unk
 
 def _strip_polarity_from_sample_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -551,7 +606,7 @@ def merge_pre_norm_simple(root: Path) -> pd.DataFrame:
 # Best-polarity selection for annotated lipids (iterative)
 # -------------------------------------------------------------------------
 
-def merge_best_polarity(root: Path) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
+def merge_best_polarity(root: Path) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     """
     Best-polarity merge for annotated lipids, with iterative refinement (B1).
 
@@ -583,9 +638,10 @@ def merge_best_polarity(root: Path) -> Tuple[pd.DataFrame, Optional[pd.DataFrame
 
     Returns:
         df_ann_best  – merged annotated table
+        df_ann_best_semi  – merged semi-quant annotated table (or None)
         df_unk_best  – merged unknowns (or None if no unknown files found)
     """
-    df_pos_ann, df_neg_ann, df_pos_unk, df_neg_unk = _load_final_files(root)
+    (df_pos_ann, df_neg_ann, df_pos_ann_semi, df_neg_ann_semi, df_pos_unk, df_neg_unk) = _load_final_files(root)
     debug_dir = root / "debug_merging"
     debug_dir.mkdir(exist_ok=True)
 
@@ -593,18 +649,32 @@ def merge_best_polarity(root: Path) -> Tuple[pd.DataFrame, Optional[pd.DataFrame
 
     # Case 1: only one polarity exists -> degenerate to "simple" behavior for annotated
     if df_pos_ann is None or df_neg_ann is None:
-        print(f'One polarity is missing. Merging cannot be completed.', flush = True)
+        print(f'One polarity is missing. Merging cannot be completed.', flush=True)
+
         annotated_frames: List[pd.DataFrame] = []
+        semi_frames: List[pd.DataFrame] = []
+
         if df_pos_ann is not None:
             df = df_pos_ann.copy()
             df["UniqueID"] = "P_" + df["UniqueID"].astype(str)
             annotated_frames.append(df)
-            print(f'Positive is present.', flush = True)
+            print(f'Positive is present.', flush=True)
+
         if df_neg_ann is not None:
             df = df_neg_ann.copy()
             df["UniqueID"] = "N_" + df["UniqueID"].astype(str)
             annotated_frames.append(df)
-            print(f'Negative is present.', flush = True)
+            print(f'Negative is present.', flush=True)
+
+        if df_pos_ann_semi is not None:
+            df = df_pos_ann_semi.copy()
+            df["UniqueID"] = "P_" + df["UniqueID"].astype(str)
+            semi_frames.append(df)
+
+        if df_neg_ann_semi is not None:
+            df = df_neg_ann_semi.copy()
+            df["UniqueID"] = "N_" + df["UniqueID"].astype(str)
+            semi_frames.append(df)
 
         if annotated_frames:
             all_cols = sorted({c for df in annotated_frames for c in df.columns})
@@ -618,9 +688,34 @@ def merge_best_polarity(root: Path) -> Tuple[pd.DataFrame, Optional[pd.DataFrame
             [c for c in sample_cols_ann if c in df_out.columns]
         df_ann_best = df_out.reindex(columns=final_cols_ann)
 
+        if semi_frames:
+            all_cols_semi = sorted({c for df in semi_frames for c in df.columns})
+            aligned_semi = [df.reindex(columns=all_cols_semi) for df in semi_frames]
+            df_out_semi = pd.concat(aligned_semi, ignore_index=True)
+
+            sample_cols_semi = sorted(_detect_sample_columns(df_out_semi, BASE_ANNOTATED_COLS))
+            final_cols_semi = [c for c in BASE_ANNOTATED_COLS if c in df_out_semi.columns] + \
+                [c for c in sample_cols_semi if c in df_out_semi.columns]
+            df_ann_best_semi = df_out_semi.reindex(columns=final_cols_semi)
+        else:
+            df_ann_best_semi = None
+
     else:
         # Case 2: both polarities exist -> full iterative pairing + scoring
         print(f'Both polarities are present for merging.', flush = True)
+        
+        if df_pos_ann_semi is not None and "UniqueID" in df_pos_ann.columns and "UniqueID" in df_pos_ann_semi.columns:
+            if not df_pos_ann["UniqueID"].astype(str).reset_index(drop=True).equals(
+                df_pos_ann_semi["UniqueID"].astype(str).reset_index(drop=True)
+            ):
+                raise ValueError("POS annotated and POS semi-quant files do not have matching row order / UniqueID.")
+
+        if df_neg_ann_semi is not None and "UniqueID" in df_neg_ann.columns and "UniqueID" in df_neg_ann_semi.columns:
+            if not df_neg_ann["UniqueID"].astype(str).reset_index(drop=True).equals(
+                df_neg_ann_semi["UniqueID"].astype(str).reset_index(drop=True)
+            ):
+                raise ValueError("NEG annotated and NEG semi-quant files do not have matching row order / UniqueID.")
+        
         pos_alive_idx = set(df_pos_ann.index)
         neg_alive_idx = set(df_neg_ann.index)
 
@@ -792,6 +887,22 @@ def merge_best_polarity(root: Path) -> Tuple[pd.DataFrame, Optional[pd.DataFrame
         # After iterative refinement, keep all remaining alive features
         df_pos_final = df_pos_ann.loc[sorted(pos_alive_idx)].copy() if pos_alive_idx else df_pos_ann.iloc[0:0].copy()
         df_neg_final = df_neg_ann.loc[sorted(neg_alive_idx)].copy() if neg_alive_idx else df_neg_ann.iloc[0:0].copy()
+        
+        # Semi-quant tables must follow the same winning indices as the main annotated tables
+        df_pos_final_semi = None
+        df_neg_final_semi = None
+
+        if df_pos_ann_semi is not None:
+            df_pos_final_semi = (
+                df_pos_ann_semi.loc[sorted(pos_alive_idx)].copy()
+                if pos_alive_idx else df_pos_ann_semi.iloc[0:0].copy()
+            )
+
+        if df_neg_ann_semi is not None:
+            df_neg_final_semi = (
+                df_neg_ann_semi.loc[sorted(neg_alive_idx)].copy()
+                if neg_alive_idx else df_neg_ann_semi.iloc[0:0].copy()
+            )
 
         # Write debug files
         if all_pairs_debug:
@@ -819,6 +930,26 @@ def merge_best_polarity(root: Path) -> Tuple[pd.DataFrame, Optional[pd.DataFrame
         final_cols_ann = [c for c in BASE_ANNOTATED_COLS if c in df_out.columns] + \
             [c for c in sample_cols_ann if c in df_out.columns]
         df_ann_best = df_out.reindex(columns=final_cols_ann)
+
+        # Build the matching semi-quant best-polarity table
+        semi_frames_best: List[pd.DataFrame] = []
+
+        if df_pos_final_semi is not None:
+            df_pos_final_semi["UniqueID"] = "P_" + df_pos_final_semi["UniqueID"].astype(str)
+            semi_frames_best.append(df_pos_final_semi)
+
+        if df_neg_final_semi is not None:
+            df_neg_final_semi["UniqueID"] = "N_" + df_neg_final_semi["UniqueID"].astype(str)
+            semi_frames_best.append(df_neg_final_semi)
+
+        if semi_frames_best:
+            df_out_semi = pd.concat(semi_frames_best, ignore_index=True)
+            sample_cols_ann_semi = sorted(_detect_sample_columns(df_out_semi, BASE_ANNOTATED_COLS))
+            final_cols_ann_semi = [c for c in BASE_ANNOTATED_COLS if c in df_out_semi.columns] + \
+                [c for c in sample_cols_ann_semi if c in df_out_semi.columns]
+            df_ann_best_semi = df_out_semi.reindex(columns=final_cols_ann_semi)
+        else:
+            df_ann_best_semi = None
 
     # --- Unknowns: always simple concatenation with P_/N_ prefixes ---
 
@@ -850,11 +981,15 @@ def merge_best_polarity(root: Path) -> Tuple[pd.DataFrame, Optional[pd.DataFrame
     out_ann = root / "Final_Annotated.csv"
     df_ann_best.to_csv(out_ann, index=False, encoding="utf-8-sig")
 
+    if df_ann_best_semi is not None:
+        out_ann_semi = root / "Final_Annotated_semi_quant.csv"
+        df_ann_best_semi.to_csv(out_ann_semi, index=False, encoding="utf-8-sig")
+
     if df_unk_best is not None:
         out_unk = root / "Final_Unknowns.csv"
         df_unk_best.to_csv(out_unk, index=False, encoding="utf-8-sig")
 
-    return df_ann_best, df_unk_best
+    return df_ann_best, df_ann_best_semi, df_unk_best
 
 def _merge_best_from_tables(df_pos_ann, df_neg_ann):
     """
@@ -1046,8 +1181,8 @@ def main():
         default="both",
         help=(
             "simple = merge normalized + pre-norm by simple concatenation; "
-            "best = best-polarity merge for pre-norm only; "
-            "both = run simple (normalized + pre-norm) + best (pre-norm)."
+            "best = best-polarity merge for final annotated/semi-quant and pre-norm annotated; "
+            "both = run simple merges + final best-polarity merge + pre-norm best-polarity merge."
         ),
     )
 
@@ -1059,25 +1194,42 @@ def main():
     # --------------------------------------------------
     if args.mode in ("simple", "both"):
         print("[MERGE] Simple merge: normalized annotated/unknowns", flush=True)
-        df_ann_simple, df_unk_simple = merge_simple(root)
+        df_ann_simple, df_ann_semi_simple, df_unk_simple = merge_simple(root)
         print(f"[MERGE] Normalized simple annotated: {df_ann_simple.shape}", flush=True)
         if df_unk_simple is not None:
             print(f"[MERGE] Normalized simple unknowns: {df_unk_simple.shape}", flush=True)
         else:
             print("[MERGE] Normalized simple unknowns: none", flush=True)
+        if df_ann_semi_simple is not None:
+            print(f"[MERGE] Normalized simple semi-quant annotated: {df_ann_semi_simple.shape}", flush=True)
+        else:
+            print("[MERGE] Normalized simple semi-quant annotated: none", flush=True)
 
         print("[MERGE] Simple merge: pre-normalization annotated", flush=True)
         df_pre_simple = merge_pre_norm_simple(root)
         print(f"[MERGE] Pre-normalization simple annotated: {df_pre_simple.shape}", flush=True)
 
     # --------------------------------------------------
-    # BEST-POLARITY: **pre-normalization only**
+    # BEST-POLARITY: final annotated + matching semi-quant
     # --------------------------------------------------
     if args.mode in ("best", "both"):
-        print("[MERGE] Best-polarity merge: pre-normalization annotated (and unknowns if present)", flush=True)
+        print("[MERGE] Best-polarity merge: final annotated / semi-quant / unknowns", flush=True)
+        df_ann_best, df_ann_best_semi, df_unk_best = merge_best_polarity(root)
+        print(f"[MERGE] Final best annotated: {df_ann_best.shape}", flush=True)
+
+        if df_ann_best_semi is not None:
+            print(f"[MERGE] Final best semi-quant annotated: {df_ann_best_semi.shape}", flush=True)
+        else:
+            print("[MERGE] Final best semi-quant annotated: none", flush=True)
+
+        if df_unk_best is not None:
+            print(f"[MERGE] Final best unknowns: {df_unk_best.shape}", flush=True)
+        else:
+            print("[MERGE] Final best unknowns: none", flush=True)
+
+        print("[MERGE] Best-polarity merge: pre-normalization annotated", flush=True)
         df_pre_best = merge_pre_norm_best_polarity(root)
         print(f"[MERGE] Pre-normalization best annotated: {df_pre_best.shape}\n", flush=True)
-
 
 if __name__ == "__main__":
     main()

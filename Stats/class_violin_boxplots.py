@@ -25,6 +25,7 @@ import seaborn as sns
 from matplotlib import ticker
 from matplotlib import collections as mcoll
 
+from Stats.figure_style import build_group_palette as _shared_build_group_palette, get_figure_style
 from Stats.utils import load_dataset, prepare_output_dir
 from Stats.summed_intensity_per_class import totals_per_class_from_X
 
@@ -42,27 +43,7 @@ sns.set_style("white")  # we'll control grids per-axes
 
 # --- Group palette helper (shared shape across modules) ---
 def _build_group_palette(groups_like, group_colors=None, group_order=None):
-    """Return (order, palette_dict) for the given groups iterable/Series."""
-    natural = [str(g) for g in (groups_like.tolist() if hasattr(groups_like, "tolist") else list(groups_like))]
-    unique_natural = list(dict.fromkeys(natural))  # preserves first-seen order
-
-    if group_order:
-        order = [g for g in group_order if g in unique_natural] + [g for g in unique_natural if g not in group_order]
-    else:
-        order = unique_natural
-
-    if group_colors:
-        pal = {g: group_colors.get(g) for g in order if group_colors.get(g)}
-        # fill any missing with the Matplotlib cycle
-        cycle = plt.rcParams.get("axes.prop_cycle").by_key().get("color", [])
-        for i, g in enumerate(order):
-            if g not in pal or not pal[g]:
-                pal[g] = cycle[i % len(cycle)] if cycle else "#1f77b4"
-    else:
-        cycle = plt.rcParams.get("axes.prop_cycle").by_key().get("color", [])
-        pal = {g: (cycle[i % len(cycle)] if cycle else "#1f77b4") for i, g in enumerate(order)}
-
-    return order, pal
+    return _shared_build_group_palette(groups_like, group_colors=group_colors, group_order=group_order)
 
 def _order_labels(present: List[str], group_order: Optional[List[str]]) -> List[str]:
     present = [str(g) for g in present]
@@ -117,6 +98,40 @@ def _robust_ylim_from(vals: np.ndarray) -> tuple[float, float, ticker.Formatter]
             fmt = ticker.FormatStrFormatter('%.1f')
     return ymin, ymax, fmt
 
+
+def _robust_ylim_no_zero_anchor(vals: np.ndarray) -> tuple[float, float, ticker.Formatter]:
+    """Compute robust y-limits without forcing the lower bound to zero."""
+    finite = np.isfinite(vals)
+    if not finite.any():
+        return (0.0, 1.0, ticker.FormatStrFormatter('%.2f'))
+    y_lo = float(np.nanpercentile(vals[finite], 1.0))
+    y_hi = float(np.nanpercentile(vals[finite], 99.0))
+    if not np.isfinite(y_hi):
+        y_hi = float(np.nanmax(vals[finite]))
+    if not np.isfinite(y_lo):
+        y_lo = 0.0
+    if not np.isfinite(y_hi) or y_hi <= y_lo:
+        delta = abs(y_lo) if y_lo != 0 else 1.0
+        y_lo, y_hi = y_lo - 0.25 * delta, y_lo + 0.75 * delta
+    margin = 0.05 * max(1e-12, (y_hi - y_lo))
+    ymin = y_lo - margin
+    ymax = y_hi + margin
+
+    vmax = float(np.nanmax(vals[finite]))
+    if vmax >= 1e4 or vmax <= 1e-3:
+        fmt = ticker.ScalarFormatter(useMathText=True)
+    else:
+        rng = ymax - ymin
+        if rng < 0.01:
+            fmt = ticker.FormatStrFormatter('%.4f')
+        elif rng < 0.1:
+            fmt = ticker.FormatStrFormatter('%.3f')
+        elif rng < 1:
+            fmt = ticker.FormatStrFormatter('%.2f')
+        else:
+            fmt = ticker.FormatStrFormatter('%.1f')
+    return ymin, ymax, fmt
+
 def _violin_one_class(
     df: pd.DataFrame,            # columns: Sample, Group, Value
     class_name: str,
@@ -126,15 +141,18 @@ def _violin_one_class(
     out_svg: Optional[str] = None,
     strip: bool = True,
     jitter: bool = True,
+    style: Optional[dict] = None,
 ):
+    style = style or get_figure_style(False, 100)
+    title_fs = max(style["title_size"] + 4, 24)
+    label_fs = max(style["label_size"] + 3, 20)
+    tick_fs = max(style["tick_size"] + 3, 18)
     fig, ax = plt.subplots(figsize=(9.5, 6.5), facecolor="white")
     ax.set_facecolor("white")
     ax.set_axisbelow(True)
     fig.subplots_adjust(left=0.12, right=0.98, top=0.86, bottom=0.30)
 
-    # Gridlines
-    ax.yaxis.grid(True, color="#D0D0D0", linestyle="--", linewidth=0.8, alpha=0.7)
-    ax.xaxis.grid(False)
+    ax.grid(False)
 
     # Violin: translucent
     sns.violinplot(
@@ -162,16 +180,17 @@ def _violin_one_class(
         )
 
     # Title/labels
-    ax.set_title(f"{class_name}: summed intensity by group", fontsize=15, pad=14)
+    ax.set_title(f"{class_name}: summed intensity by group", fontsize=title_fs, pad=16, fontweight="semibold")
     ax.set_xlabel(None)
     ax.xaxis.label.set_visible(False)
-    ax.set_ylabel("Summed intensity", fontsize=13, labelpad=12)
+    ax.set_ylabel("Summed intensity", fontsize=label_fs, labelpad=14)
     ax.set_xticks(range(len(order)))
-    ax.set_xticklabels(order, rotation=45, ha="right")
+    ax.set_xticklabels(order, rotation=45, ha="right", fontsize=tick_fs)
+    ax.tick_params(axis="y", labelsize=tick_fs)
 
     # Y limits
     vals = pd.to_numeric(df["Value"], errors="coerce").to_numpy()
-    ymin, ymax, fmt = _robust_ylim_from(vals)
+    ymin, ymax, fmt = _robust_ylim_no_zero_anchor(vals)
     ax.set_ylim(ymin, ymax)
     if isinstance(fmt, ticker.ScalarFormatter):
         ax.yaxis.set_major_formatter(fmt)
@@ -187,9 +206,9 @@ def _violin_one_class(
         spine.set_color("black")
 
     fig.tight_layout(pad=1.2)
-    fig.savefig(out_png, dpi=100, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.1)
-    # if out_svg:
-    #     fig.savefig(out_svg, dpi=300, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.1)
+    fig.savefig(out_png, dpi=style["dpi"], facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.1)
+    if out_svg:
+        fig.savefig(out_svg, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.1)
     plt.close(fig)
 
 def _box_one_class(
@@ -201,7 +220,12 @@ def _box_one_class(
     out_svg: Optional[str] = None,
     strip: bool = True,
     jitter: bool = True,
+    style: Optional[dict] = None,
 ):
+    style = style or get_figure_style(False, 100)
+    title_fs = max(style["title_size"] + 4, 24)
+    label_fs = max(style["label_size"] + 3, 20)
+    tick_fs = max(style["tick_size"] + 3, 18)
     fig, ax = plt.subplots(figsize=(9.5, 6.5), facecolor="white")
     ax.set_facecolor("white")
     ax.set_axisbelow(True)
@@ -261,12 +285,13 @@ def _box_one_class(
         )
 
     # Title/labels
-    ax.set_title(f"{class_name}: summed intensity by group", fontsize=15, pad=14)
+    ax.set_title(f"{class_name}: summed intensity by group", fontsize=title_fs, pad=16, fontweight="semibold")
     ax.set_xlabel(None)
     ax.xaxis.label.set_visible(False)
-    ax.set_ylabel("Summed intensity", fontsize=13, labelpad=12)
+    ax.set_ylabel("Summed intensity", fontsize=label_fs, labelpad=14)
     ax.set_xticks(range(len(order)))
-    ax.set_xticklabels(order, rotation=45, ha="right")
+    ax.set_xticklabels(order, rotation=45, ha="right", fontsize=tick_fs)
+    ax.tick_params(axis="y", labelsize=tick_fs)
 
     # Y limits
     vals = pd.to_numeric(df["Value"], errors="coerce").to_numpy()
@@ -285,9 +310,9 @@ def _box_one_class(
         spine.set_color("black")
 
     fig.tight_layout(pad=1.2)
-    fig.savefig(out_png, dpi=100, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.1)
-    # if out_svg:
-    #     fig.savefig(out_svg, dpi=300, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.1)
+    fig.savefig(out_png, dpi=style["dpi"], facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.1)
+    if out_svg:
+        fig.savefig(out_svg, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.1)
     plt.close(fig)
 
 
@@ -302,6 +327,8 @@ def run_from_stats(
     group_order: Optional[List[str]] = None,
     group_colors: Optional[dict] = None,
     exclude_qc: bool = True,
+    dpi: int = 100,
+    publication_theme: bool = False,
 ) -> Dict[str, str]:
     """
     Build class-level summaries from STATS CSV and produce, for each class:
@@ -312,6 +339,7 @@ def run_from_stats(
     Returns a dict with key output paths.
     """
     base_out = prepare_output_dir(save_dir)
+    style = get_figure_style(publication_theme=publication_theme, dpi=dpi)
     out_dir = _ensure_dir(os.path.join(base_out))
 
     print('[Class plots] Running class-level violin and boxplots...', flush=True)
@@ -374,12 +402,14 @@ def run_from_stats(
             class_name=cls, order=labels, pal=pal_groups,
             out_png=os.path.join(violin_dir, f"violin_{safe}.png"),
             out_svg=os.path.join(violin_dir, f"violin_{safe}.svg"),
+            style=style,
         )
         _box_one_class(
             df=plot_df[["Sample", "Group", "Value"]],
             class_name=cls, order=labels, pal=pal_groups,
             out_png=os.path.join(box_dir, f"boxplot_{safe}.png"),
             out_svg=os.path.join(box_dir, f"boxplot_{safe}.svg"),
+            style=style,
         )
     
     return {
