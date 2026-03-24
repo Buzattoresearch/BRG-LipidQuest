@@ -302,20 +302,20 @@ def calculate_sensitivity_score(polarity, adduct, lipid_class, sensitivity_dict)
         penalty += 0.10
 
     # Penalty due to uncommon lipids in these samples (bacterial context)
-    if lipid_class in ['PMeOH', 'PEtOH', 'WE', 'FAL', 'FOH']:
+    if lipid_class in ['PMeOH', 'PEtOH', 'PEth', 'WE', 'FAL', 'FOH']:
         penalty += 0.9
 
-    if lipid_class in ['PK', 'PR', 'Other', 'GP', 'DGTS', 'HexSPB', 'NAT', 'SHexCer',
+    if lipid_class in ['PK', 'Other', 'GP', 'DGTS', 'HexSPB', 'NAT', 'SHexCer',
                        'SQDG', 'SMGDG', 'CerP', 'MIPC', 'M(IP)2C', 'SCer', 'HC', 'PnC',
                        'PnE', 'FOH', 'FAL', 'LSM', 'GlcADG', 'DGCC',
                        'SulfateHexSPB', 'MGMG', 'DGMG', 'MGDG', 'DGDG', 'PIM',
                        'PI-Cer', 'HBMP', 'ACer', 'Acer', 'PE-Cer', 'NAE', 'PIP']:
         penalty += 0.9
 
-    elif lipid_class in ['LPA', 'LPS', 'LPI', 'NA', 'SPB', 'ACer', 'CoA', 'SHexCer', 'CerP', 'ST']:
+    elif lipid_class in ['LPS', 'LPI', 'NA', 'NAx', 'SPB', 'ACer', 'CoA', 'SHexCer', 'CerP', 'ST', 'PC', 'TG']:
         penalty += 0.80
 
-    elif lipid_class in ['PS', 'PI']:
+    elif lipid_class in ['PS', 'PI', 'LPA', ]:
         penalty += 0.35
 
     elif lipid_class in ['BMP', 'CAR', 'MG']:

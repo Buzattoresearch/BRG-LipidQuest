@@ -244,7 +244,7 @@ def run_from_stats(
     ax.set_xticklabels(norm_sample.index.astype(str), rotation=90, ha="center", fontsize=11)
     _add_relative_background_ribbons(ax, norm_sample, x, pal_sub, alpha=0.18)
 
-    width = 0.64
+    width = 0.52
     legend_handles = []
     for sc in norm_sample.columns:
         vals = norm_sample[sc].values
@@ -303,7 +303,7 @@ def run_from_stats(
     ax.set_xticklabels([str(g) for g in med_norm.index], rotation=45, ha="right", fontsize=18)
     _add_relative_background_ribbons(ax, med_norm, x, pal_sub, alpha=0.18)
 
-    width = 0.6
+    width = 0.5
     bottom = np.zeros(len(med_norm.index))
     legend_handles = []
     for sc in med_norm.columns:
@@ -354,7 +354,7 @@ def run_from_stats(
     ax.set_xticklabels([str(g) for g in med.index], rotation=45, ha="right", fontsize=18)
     _add_relative_background_ribbons(ax, med, x, pal_sub, alpha=0.18)
 
-    width = 0.6
+    width = 0.5
     bottom = np.zeros(len(med.index))
     legend_handles = []
     for sc in med.columns:

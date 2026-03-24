@@ -29,6 +29,7 @@ from Stats.class_distributions import run_from_stats as run_class_distributions
 from Stats.summed_intensity_per_class import run_from_stats as run_class_sums
 from Stats.class_violin_boxplots import run_from_stats as run_class_violin_box
 from Stats.class_number_carbons_DB import run_from_stats as run_class_carbons_db
+from Stats.fatty_acid_motif_analysis import run_from_stats as run_fatty_acid_motif_analysis
 from Stats.enrichment_analysis import run_from_stats as run_enrichment_analysis
 from Stats.ratio_analysis import (
     DEFAULT_CLASS_RATIO_DEFS,
@@ -232,12 +233,12 @@ class StatisticsPage(tk.Toplevel):
                 "Annotated semi-quant (with missing values)",
                 "Annotated (pre-normalization, merged)",
                 "Unknowns (normalized and merged)",
-                "Annotated (POS only)",
-                "Annotated semi-quant (POS only)",
-                "Unknowns (POS only)",
-                "Annotated (NEG only)",
-                "Annotated semi-quant (NEG only)",
-                "Unknowns (NEG only)",
+                # "Annotated (POS only)",
+                # "Annotated semi-quant (POS only)",
+                # "Unknowns (POS only)",
+                # "Annotated (NEG only)",
+                # "Annotated semi-quant (NEG only)",
+                # "Unknowns (NEG only)",
             ]
         )
         ds_combo.grid(row=1, column=1, sticky="w")
@@ -303,10 +304,12 @@ class StatisticsPage(tk.Toplevel):
         self.summint_button = ttk.Button(distributions_panel, text="Run Summed Int. per Class", width=25, command=self.run_class_sums)
         self.classviolinbox_button = ttk.Button(distributions_panel, text="Run Class Violin+Boxplots", width=25, command=self.run_class_violin_box)
         self.classcarbons_button = ttk.Button(distributions_panel, text="Run Carbon# DB", width=25, command=self.run_class_carbons_db)
+        self.famotif_button = ttk.Button(distributions_panel, text="Run FA Motif Analysis", width=25, command=self.run_fatty_acid_motif_analysis)
         self.classdist_button.grid(row=0, column=0, padx=8, pady=(8, 6), sticky="w")
         self.summint_button.grid(row=0, column=1, padx=8, pady=(8, 6), sticky="w")
         self.classviolinbox_button.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="w")
         self.classcarbons_button.grid(row=1, column=1, padx=8, pady=(0, 8), sticky="w")
+        self.famotif_button.grid(row=2, column=0, padx=8, pady=(0, 8), sticky="w")
 
         ratio_panel = ttk.LabelFrame(tools, text="Ratio Analysis")
         ratio_panel.grid(row=3, column=1, sticky="nsew", padx=(8, 0), pady=(0, 10))
@@ -331,7 +334,7 @@ class StatisticsPage(tk.Toplevel):
         # Disable buttons if required files are missing
         if self.missing_files:
             for btn in (self.pca_button, self.plsda_button, self.heatmap_button, self.selected_heatmap_button, self.selected_heatmap_settings_button, self.volcano_button, self.boxplots_button, self.violin_button,
-                self.correlations_button, self.classdist_button, self.summint_button, self.classviolinbox_button, self.classcarbons_button,
+                self.correlations_button, self.classdist_button, self.summint_button, self.classviolinbox_button, self.classcarbons_button, self.famotif_button,
                 self.enrichment_button, self.ratio_button, self.ratio_settings_button, self.upset_button, self.advanceddiff_button):
                 btn.config(state="disabled")
             self._add_tooltip(tools, f"Missing files: {', '.join(self.missing_files)}")
@@ -1357,6 +1360,18 @@ class StatisticsPage(tk.Toplevel):
             name="LQ-StatsWorker-AdvancedDifferential",
         )
         self._worker_thread.start()
+
+    def run_fatty_acid_motif_analysis(self):
+        if self._is_running:
+            self._toast("Another analysis is already running")
+            return
+        self._worker_thread = threading.Thread(
+            target=self._run_analysis,
+            args=("FA_Motifs",),
+            daemon=True,
+            name="LQ-StatsWorker-FAMotifs",
+        )
+        self._worker_thread.start()
         
     def run_all(self):
         if self._is_running:
@@ -1373,7 +1388,7 @@ class StatisticsPage(tk.Toplevel):
             return
         stopped = False
         try:
-            order = ["PCA", "PLS-DA", "Heatmap", "Selected_Heatmap", "Correlations", "Class_Distributions", "Class_Sums", "Class_violin_box", "Class_Carbons_DB", "Enrichment", "Ratios", "Advanced_Differential", "UpSet", "Volcano", "Boxplots", "Violin",]
+            order = ["PCA", "PLS-DA", "Heatmap", "Selected_Heatmap", "Correlations", "Class_Distributions", "Class_Sums", "Class_violin_box", "Class_Carbons_DB", "FA_Motifs", "Enrichment", "Ratios", "Advanced_Differential", "UpSet", "Volcano", "Boxplots", "Violin",]
             for at in order:
                 self._toast(f"Running {at}…")
                 self._run_analysis(at, _sequence_mode=True)
@@ -1546,7 +1561,7 @@ class StatisticsPage(tk.Toplevel):
                     continue
 
                 # Tool-specific gating
-                needs_no_qc = {"PLS-DA", "Volcano", "Heatmap", "Selected_Heatmap", "Boxplots", "Violin", "Correlations", "Class_Distributions", "Class_Sums", "Class_violin_box", "Class_Carbons_DB", "Enrichment", "Ratios", "Advanced_Differential", "UpSet"}
+                needs_no_qc = {"PLS-DA", "Volcano", "Heatmap", "Selected_Heatmap", "Boxplots", "Violin", "Correlations", "Class_Distributions", "Class_Sums", "Class_violin_box", "Class_Carbons_DB", "FA_Motifs", "Enrichment", "Ratios", "Advanced_Differential", "UpSet"}
                 label_upper = str(label).upper()
                 is_no_qc_label = (
                     "WITHOUT_QCS" in label_upper
@@ -1608,11 +1623,16 @@ class StatisticsPage(tk.Toplevel):
                             publication_theme=publication_theme,
                         )
                     elif analysis_type == "Selected_Heatmap":
+                        selected_annotations = [
+                            str(x).strip() for x in (self.selected_heatmap_annotations or []) if str(x).strip()
+                        ]
+                        if not selected_annotations:
+                            raise ValueError("No annotations were selected for the heatmap.")
                         run_selected_lipid_heatmap(
                             fpath,
                             matched_group_file,
                             subfolder,
-                            selected_annotations=self.selected_heatmap_annotations,
+                            selected_annotations=selected_annotations,
                             group_colors=palette,
                             group_order=self.group_order,
                             dpi=figure_dpi,
@@ -1695,6 +1715,18 @@ class StatisticsPage(tk.Toplevel):
                             exclude_qc=True,
                             dpi=figure_dpi,
                             publication_theme=publication_theme,
+                        )
+                    elif analysis_type == "FA_Motifs":
+                        run_fatty_acid_motif_analysis(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_colors=palette,
+                            group_order=self.group_order,
+                            exclude_qc=True,
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                            dataset_label=self.var_dataset.get(),
                         )
                     elif analysis_type == "Ratios":
                         run_ratio_analysis(
@@ -1791,7 +1823,10 @@ class StatisticsPage(tk.Toplevel):
         # remove leading polarity prefixes
         cleaned = re.sub(r"^(P_|N_)", "", cleaned, flags=re.IGNORECASE)
 
-        # remove trailing polarity suffixes if they exist
+        # remove run/injection suffixes like _P1-A-8_1_1104 or _P2-...
+        cleaned = re.sub(r"_P[12].*$", "", cleaned, flags=re.IGNORECASE)
+
+        # keep the older narrow suffix cleanup as a fallback for simpler names
         cleaned = re.sub(r"(_P[12]|_N[12])$", "", cleaned, flags=re.IGNORECASE)
 
         return cleaned.strip("_- ")
@@ -2482,7 +2517,7 @@ class StatisticsPage(tk.Toplevel):
 
             # Enable buttons
             for btn in (self.pca_button, self.plsda_button, self.heatmap_button, self.selected_heatmap_button, self.selected_heatmap_settings_button, self.volcano_button, self.boxplots_button, self.violin_button,
-                        self.correlations_button, self.classdist_button, self.summint_button, self.classviolinbox_button, self.classcarbons_button,
+                        self.correlations_button, self.classdist_button, self.summint_button, self.classviolinbox_button, self.classcarbons_button, self.famotif_button,
                         self.enrichment_button, self.ratio_button, self.ratio_settings_button, self.upset_button, self.advanceddiff_button):
                 btn.config(state="normal")
 

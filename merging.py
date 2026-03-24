@@ -103,6 +103,43 @@ def _detect_sample_columns(df: pd.DataFrame, base_cols: List[str]) -> List[str]:
     return sample_cols
 
 
+def _align_semi_to_selected_uniqueids(
+    semi_df: Optional[pd.DataFrame],
+    selected_uniqueids: List[str],
+    polarity_label: str,
+    debug_dir: Optional[Path] = None,
+) -> Optional[pd.DataFrame]:
+    """
+    Align a semi-quant dataframe to the selected annotated UniqueIDs.
+
+    The semi-quant table is allowed to be a subset of the annotated table
+    because RSD filtering may have been applied independently. Rows are
+    matched by UniqueID and returned in the order of selected_uniqueids.
+    """
+    if semi_df is None:
+        return None
+    if "UniqueID" not in semi_df.columns:
+        return semi_df.iloc[0:0].copy()
+
+    semi = semi_df.copy()
+    semi["UniqueID"] = semi["UniqueID"].astype(str)
+
+    selected_df = pd.DataFrame({"UniqueID": [str(uid) for uid in selected_uniqueids]})
+    aligned = selected_df.merge(semi, on="UniqueID", how="left", sort=False, indicator=True)
+
+    missing_mask = aligned["_merge"].eq("left_only")
+    if missing_mask.any():
+        missing_df = aligned.loc[missing_mask, ["UniqueID"]].copy()
+        missing_df.insert(0, "Polarity", polarity_label)
+        missing_df["Reason"] = "Present in merged annotated output but absent from semi-quant file"
+        if debug_dir is not None:
+            out_path = debug_dir / f"missing_semi_quant_rows_{polarity_label}.csv"
+            missing_df.to_csv(out_path, index=False, encoding="utf-8-sig")
+
+    aligned = aligned.loc[aligned["_merge"].eq("both")].drop(columns=["_merge"])
+    return aligned
+
+
 def _load_final_files(root: Path) -> Tuple[
     Optional[pd.DataFrame], Optional[pd.DataFrame],
     Optional[pd.DataFrame], Optional[pd.DataFrame],
@@ -704,18 +741,6 @@ def merge_best_polarity(root: Path) -> Tuple[pd.DataFrame, Optional[pd.DataFrame
         # Case 2: both polarities exist -> full iterative pairing + scoring
         print(f'Both polarities are present for merging.', flush = True)
         
-        if df_pos_ann_semi is not None and "UniqueID" in df_pos_ann.columns and "UniqueID" in df_pos_ann_semi.columns:
-            if not df_pos_ann["UniqueID"].astype(str).reset_index(drop=True).equals(
-                df_pos_ann_semi["UniqueID"].astype(str).reset_index(drop=True)
-            ):
-                raise ValueError("POS annotated and POS semi-quant files do not have matching row order / UniqueID.")
-
-        if df_neg_ann_semi is not None and "UniqueID" in df_neg_ann.columns and "UniqueID" in df_neg_ann_semi.columns:
-            if not df_neg_ann["UniqueID"].astype(str).reset_index(drop=True).equals(
-                df_neg_ann_semi["UniqueID"].astype(str).reset_index(drop=True)
-            ):
-                raise ValueError("NEG annotated and NEG semi-quant files do not have matching row order / UniqueID.")
-        
         pos_alive_idx = set(df_pos_ann.index)
         neg_alive_idx = set(df_neg_ann.index)
 
@@ -893,15 +918,21 @@ def merge_best_polarity(root: Path) -> Tuple[pd.DataFrame, Optional[pd.DataFrame
         df_neg_final_semi = None
 
         if df_pos_ann_semi is not None:
-            df_pos_final_semi = (
-                df_pos_ann_semi.loc[sorted(pos_alive_idx)].copy()
-                if pos_alive_idx else df_pos_ann_semi.iloc[0:0].copy()
+            pos_selected_uniqueids = df_pos_final["UniqueID"].astype(str).tolist()
+            df_pos_final_semi = _align_semi_to_selected_uniqueids(
+                df_pos_ann_semi,
+                pos_selected_uniqueids,
+                polarity_label="POS",
+                debug_dir=debug_dir,
             )
 
         if df_neg_ann_semi is not None:
-            df_neg_final_semi = (
-                df_neg_ann_semi.loc[sorted(neg_alive_idx)].copy()
-                if neg_alive_idx else df_neg_ann_semi.iloc[0:0].copy()
+            neg_selected_uniqueids = df_neg_final["UniqueID"].astype(str).tolist()
+            df_neg_final_semi = _align_semi_to_selected_uniqueids(
+                df_neg_ann_semi,
+                neg_selected_uniqueids,
+                polarity_label="NEG",
+                debug_dir=debug_dir,
             )
 
         # Write debug files

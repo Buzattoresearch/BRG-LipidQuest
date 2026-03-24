@@ -239,10 +239,17 @@ def impute_missing_values(final_csv, group_csv, output_folder="results",
     }
     group_to_idxs = {g: idxs for g, idxs in group_to_idxs.items() if idxs}
 
+    def _row_nanpercentile(arr: np.ndarray, q: float) -> np.ndarray:
+        out = np.full(arr.shape[0], np.nan, dtype=float)
+        valid_rows = np.isfinite(arr).any(axis=1)
+        if valid_rows.any():
+            out[valid_rows] = np.nanpercentile(arr[valid_rows], q, axis=1)
+        return out
+
     # Row-global positive 1st percentile fallback
     Xp = X.copy()
     Xp[~(Xp > 0)] = np.nan
-    row_global_min = np.nanpercentile(Xp, 1, axis=1)  # per row; NaN if no positives
+    row_global_min = _row_nanpercentile(Xp, 1)  # per row; NaN if no positives
 
     for g, idxs in group_to_idxs.items():
         G = X[:, idxs]              # submatrix for group g
@@ -250,7 +257,7 @@ def impute_missing_values(final_csv, group_csv, output_folder="results",
         G_pos[~(G_pos > 0)] = np.nan
 
         # row-wise LOD in this group = 1st pct of positives across the group's samples
-        row_group_lod = np.nanpercentile(G_pos, 1, axis=1)
+        row_group_lod = _row_nanpercentile(G_pos, 1)
 
         # detection rate per row in this group (positives count)
         det_rate = np.sum(G > 0, axis=1) / float(len(idxs))
@@ -286,9 +293,15 @@ def impute_missing_values(final_csv, group_csv, output_folder="results",
     # 4) Recompute summaries and RSDs
     # =======================
     def rsd(series):
-        m = np.nanmean(series)
-        s = np.nanstd(series)
-        return 100 * s / m if m and not np.isnan(m) else np.nan
+        vals = pd.to_numeric(series, errors="coerce").to_numpy(dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if vals.size == 0:
+            return np.nan
+        m = float(np.mean(vals))
+        if not np.isfinite(m) or m == 0.0:
+            return np.nan
+        s = float(np.std(vals, ddof=0))
+        return 100 * s / m
 
     # Remove old summary columns if present
     for col in ["Average Intensity (all samples)", "Minimum Intensity (all samples)", "Maximum Intensity (all samples)"]:

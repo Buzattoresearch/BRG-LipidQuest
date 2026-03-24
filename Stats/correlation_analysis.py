@@ -13,6 +13,7 @@ import os
 import re
 import warnings
 from pathlib import Path
+from textwrap import fill
 from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -71,6 +72,15 @@ def _clean_feature_label(s: str) -> str:
     # normalize spaces
     out = re.sub(r"\s+", " ", out).strip()
     return out
+
+
+def _wrap_cbar_label(label: str, width: int = 18) -> str:
+    text = str(label or "").strip()
+    if not text:
+        return text
+    if len(text) <= width:
+        return text
+    return fill(text, width=width, max_lines=2)
 
 
 def _select_numeric_features(df: pd.DataFrame, exclude_cols: Iterable[str]) -> List[str]:
@@ -383,17 +393,17 @@ def _plot_lower_triangle_heatmap(C: pd.DataFrame,
                                  tick_fs: int = 8,
                                  note_text: Optional[str] = None) -> None:
     """Lower-triangle clustered heatmap with labels on left and on-diagonal rotated labels on top."""
-    label_fs = tick_fs + 2
-    plt.figure(figsize=(14, 12))
+    label_fs = tick_fs + 4
+    fig, ax = plt.subplots(figsize=(14, 12))
     mask = np.triu(np.ones_like(C, dtype=bool), k=1)
-    ax = sns.heatmap(
+    sns.heatmap(
         C,
         cmap="coolwarm",
         center=0,
         mask=mask,
         square=True,
         linewidths=0.5,
-        cbar_kws={"label": "Correlation Coefficient", "orientation": "horizontal", "shrink": 0.6, "pad": 0.1},
+        cbar_kws={"label": _wrap_cbar_label("Correlation Coefficient"), "orientation": "horizontal", "shrink": 0.6, "pad": 0.1},
         xticklabels=False,
         yticklabels=False
     )
@@ -413,14 +423,15 @@ def _plot_lower_triangle_heatmap(C: pd.DataFrame,
         ax.plot(i + 0.5, i - 0.125, marker="|", color="black", markersize=4,
                 markeredgewidth=1, clip_on=False)
 
-    ax.set_title(title, fontsize=14, pad=20)
     if note_text:
-        plt.gcf().subplots_adjust(bottom=0.12)
-        plt.gcf().text(0.5, 0.02, note_text, ha="center", va="bottom", fontsize=10, color="dimgray")
-    plt.tight_layout()
-    plt.savefig(out_png, dpi=100, bbox_inches="tight")
-    plt.savefig(out_svg, dpi=100, bbox_inches="tight")
-    plt.close()
+        fig.subplots_adjust(bottom=0.16, top=0.96)
+        fig.text(0.5, 0.008, note_text, ha="center", va="bottom", fontsize=10, color="dimgray")
+    else:
+        fig.subplots_adjust(top=0.96)
+    fig.tight_layout(rect=(0, 0, 1, 0.98))
+    fig.savefig(out_png, dpi=100, bbox_inches="tight")
+    fig.savefig(out_svg, dpi=100, bbox_inches="tight")
+    plt.close(fig)
 
 def _make_feature_labels(names: Iterable[str], feature_meta: Optional[pd.DataFrame]) -> pd.Index:
     names = pd.Index(names).astype(str)
@@ -516,7 +527,7 @@ def _plot_simple_heatmap(
         center=center,
         linewidths=0.5,
         linecolor="white",
-        cbar_kws={"label": "Mean z-score" if center == 0.0 else "Value"},
+        cbar_kws={"label": _wrap_cbar_label("Mean z-score" if center == 0.0 else "Value")},
         ax=ax,
     )
     ax.set_title(title, fontsize=14, pad=12)
@@ -692,7 +703,7 @@ def run_correlation_analysis(
     save_dir: str,
     group_col: str = "Group",
     sample_id_col: Optional[str] = None,
-    top_list: Iterable[int] = (15, 25, 50, 100),
+    top_list: Iterable[int] = (10, 15, 25, 50, 100),
     do_groupwise: bool = True,
     group_order: Optional[List[str]] = None,
 ) -> None:
@@ -875,7 +886,7 @@ def run_correlation_analysis(
             out_png=outdir / f"correlation_compounds_top{top_n}.png",
             out_svg=outdir / f"correlation_compounds_top{top_n}.svg",
             ylabels_clean=True,
-            tick_fs=8 if top_n >= 50 else 10 if top_n >= 25 else 12,
+            tick_fs=6 if top_n >= 100 else 7 if top_n >= 50 else 10 if top_n >= 25 else 12,
             note_text=(
                 "Red cells mark lipid pairs that tend to increase and decrease together across samples.\n"
                 "Blue cells mark inverse relationships; clustered blocks suggest coordinated lipid modules."
@@ -974,7 +985,7 @@ def run_correlation_analysis(
                     out_png=gdir / f"{prefix}_compound_correlation.png",
                     out_svg=gdir / f"{prefix}_compound_correlation.svg",
                     ylabels_clean=True,
-                    tick_fs=7 if Cg.shape[0] >= 60 else 8 if Cg.shape[0] >= 40 else 10,
+                    tick_fs=6 if top_n >= 100 else 7 if top_n >= 50 else 7 if Cg.shape[0] >= 60 else 8 if Cg.shape[0] >= 40 else 10,
                     note_text=(
                         "This shows how strongly the selected lipids move together within this group only.\n"
                         "Compare these group-specific patterns to see whether coordination strengthens or weakens between groups."

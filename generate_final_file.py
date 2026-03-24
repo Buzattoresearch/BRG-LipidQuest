@@ -126,7 +126,7 @@ def _build_species_annotation(df: pd.DataFrame) -> pd.Series:
     is_molecular = ann.str.contains(r"[/_]", regex=True, na=False)
 
     oxy = ann.str.extract(r"(;O\d+)", expand=False).fillna("")
-    sph_mask = hg.str.contains(r"^(Cer|SM|HexCer|GM)$", case=False, regex=True, na=False)
+    sph_mask = hg.str.contains(r"^(?:Cer|SM|HexCer|GM)$", case=False, regex=True, na=False)
 
     # keep ;O# only when BOTH: (Cer/SM/HexCer) AND (molecular-level annotation)
     oxy = oxy.where(sph_mask & is_molecular, "")
@@ -352,23 +352,16 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
     unknowns_file = None
     method_used = None
     method_used_unk = None
+    annotated_method_idx = None
 
     # Detect annotated file (supports Pos_/Neg_ prefixes)
-    for name, label in annotated_candidates:
+    for idx, (name, label) in enumerate(annotated_candidates):
         matches = sorted(debug_folder.glob(f"*{name}"))
         if not matches:
             continue
         annotated_file = matches[0]
         method_used = label
-        break  # stop at the first match, respecting priority
-
-    # Detect annotated file with semi_quant (supports Pos_/Neg_ prefixes)
-    for name_semi, label_semi in annotated_semi_quant_candidates:
-        matches_semi_quant = sorted(debug_folder.glob(f"*{name_semi}"))
-        if not matches_semi_quant:
-            continue
-        annotated_file_semi_quant = matches_semi_quant[0]
-        method_used = label_semi
+        annotated_method_idx = idx
         break  # stop at the first match, respecting priority
 
     # Detect unknowns file (supports Pos_/Neg_ prefixes and matches annotated polarity)
@@ -385,6 +378,14 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
             "No annotated dataset found in results/debug. "
             "Expected one of:\n" + "\n".join(n for n, _ in annotated_candidates)
         )
+
+    # Detect semi-quant file from the SAME normalization stage as the chosen
+    # annotated file. This prevents mixing LOESS/median/basic outputs.
+    if annotated_method_idx is not None and annotated_method_idx < len(annotated_semi_quant_candidates):
+        name_semi, _label_semi = annotated_semi_quant_candidates[annotated_method_idx]
+        matches_semi_quant = sorted(debug_folder.glob(f"*{name_semi}"))
+        if matches_semi_quant:
+            annotated_file_semi_quant = matches_semi_quant[0]
 
     print(f"\n[FINAL] ✅ GENERATING FINAL FILES: Using annotated and normalized dataset {annotated_file.name} ({method_used})", flush=True)
     print("[FINAL] ✅ GENERATING FINAL FILES: Using non-normalized annotated dataset 3-Final_annotated_results_imputed.csv → Final_Before_Normalization.csv", flush=True)
@@ -569,7 +570,7 @@ def create_final_outputs(results_folder, rsd_qc_thresh=None, max_group_rsd_thres
         df_ann_semi["Annotation level"] = _build_annotation_level(df_ann_semi)
 
         # Detect all sample columns
-        rsd_cols_semi = [c for c in df_ann.columns
+        rsd_cols_semi = [c for c in df_ann_semi.columns
                         if isinstance(c, str) and c.startswith(("RSD_", "QC detected")) and c not in base_cols]
         sample_cols_semi = [
             c for c in df_ann_semi.columns

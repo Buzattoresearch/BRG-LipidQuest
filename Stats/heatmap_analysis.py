@@ -408,7 +408,7 @@ def _plot_selected_lipid_heatmap(
 
         ax.set_xlabel("Samples", fontsize=style["label_size"], labelpad=12)
         ax.set_ylabel("")
-        ax.tick_params(axis="x", rotation=55)
+        ax.tick_params(axis="x", rotation=55, labelsize=max(style["tick_size"] - 2, 7))
         plt.setp(ax.get_xticklabels(), ha="right")
         plt.setp(ax.get_yticklabels(), rotation=0)
 
@@ -470,7 +470,6 @@ def _plot_selected_lipid_heatmap(
                 fontsize=max(style["tick_size"] - 1, 8),
                 fontweight="semibold",
             )
-        fig.suptitle("Selected lipid heatmap", fontsize=style["title_size"], fontweight="bold", y=0.985)
         _safe_savefig(fig, out_png, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.2)
         _safe_savefig(fig, out_svg, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.2)
         plt.close(fig)
@@ -549,7 +548,7 @@ def _plot_all_features_by_class_heatmap(
 
         ax.set_xlabel("Samples", fontsize=style["label_size"], labelpad=12)
         ax.set_ylabel("")
-        ax.tick_params(axis="x", rotation=55)
+        ax.tick_params(axis="x", rotation=55, labelsize=max(style["tick_size"] - 2, 7))
         plt.setp(ax.get_xticklabels(), ha="right")
 
         col_colors, _legend_handles = _group_colorbar(ordered_groups, group_colors=group_colors, group_order=group_order)
@@ -669,6 +668,7 @@ def _plot_heatmap(
     group_colors=None,
     group_order=None,
     style: Optional[dict] = None,
+    row_label_map: Optional[Dict[str, str]] = None,
 ):
     style = style or get_figure_style(False, 100)
 
@@ -696,16 +696,17 @@ def _plot_heatmap(
     # Annotation mapping (robust, like VIP code)
     # ==========================================================
     annotations = []
+    row_label_map = row_label_map or {}
     if isinstance(feature_meta, pd.DataFrame) and "Annotation" in feature_meta.columns:
         uid_to_annotation = dict(zip(
             feature_meta["UniqueID"].astype(str).str.strip(),
             feature_meta["Annotation"].astype(str).str.strip()
         ))
         for uid in Xsel.columns:
-            ann = uid_to_annotation.get(str(uid).strip(), str(uid))
+            ann = row_label_map.get(str(uid), uid_to_annotation.get(str(uid).strip(), str(uid)))
             annotations.append(ann)
     else:
-        annotations = [str(uid) for uid in Xsel.columns]
+        annotations = [str(row_label_map.get(str(uid), str(uid))) for uid in Xsel.columns]
 
     # Dynamic figure sizing
     fig_w, fig_h = _dynamic_figsize(n_features=H.shape[0], n_samples=H.shape[1])
@@ -884,8 +885,8 @@ def _plot_heatmap(
     elif top_k >25:
         cg_annot.fig.suptitle(f"Clustered Heatmap (Top {top_k} by Kruskal-FDR)", fontsize=style["title_size"], weight="bold", y=1.005)
         
-    plt.setp(cg_annot.ax_heatmap.get_xticklabels(), rotation=55, ha="right", fontsize=style["tick_size"])
-    plt.setp(cg_annot.ax_heatmap.get_yticklabels(), rotation=0, ha="left", fontsize=max(style["tick_size"] - 1, 8))
+    plt.setp(cg_annot.ax_heatmap.get_xticklabels(), rotation=55, ha="right", fontsize=max(style["tick_size"] - 2, 7))
+    plt.setp(cg_annot.ax_heatmap.get_yticklabels(), rotation=0, ha="left", fontsize=max(style["tick_size"] - 2, 8))
     
     # --- Ensure all annotation labels are visible (Seaborn may hide half automatically) ---
     for label in cg_annot.ax_heatmap.get_yticklabels():
@@ -979,7 +980,7 @@ def _plot_heatmap(
     # 2) UniqueID-only version
     # ==========================================================
     H_uid = H.copy()
-    H_uid.index = [str(fid).strip() for fid in selected_ids]
+    H_uid.index = [str(row_label_map.get(str(fid).strip(), str(fid).strip())) for fid in selected_ids]
 
     cg_uid = sns.clustermap(
         H_uid,
@@ -1152,8 +1153,8 @@ def _plot_heatmap(
     elif top_k >25:
         cg_uid.fig.suptitle(f"Clustered Heatmap (Top {top_k} by Kruskal-FDR)", fontsize=style["title_size"], weight="bold", y=1.005)
           
-    plt.setp(cg_uid.ax_heatmap.get_xticklabels(), rotation=55, ha="right", fontsize=style["tick_size"])
-    plt.setp(cg_uid.ax_heatmap.get_yticklabels(), rotation=0, ha="left", fontsize=max(style["tick_size"] - 1, 8))
+    plt.setp(cg_uid.ax_heatmap.get_xticklabels(), rotation=55, ha="right", fontsize=max(style["tick_size"] - 2, 7))
+    plt.setp(cg_uid.ax_heatmap.get_yticklabels(), rotation=0, ha="left", fontsize=max(style["tick_size"] - 2, 8))
     
     # Attach legend to the full figure — top center, above title
     n_groups = len(legend_handles)
@@ -1510,36 +1511,36 @@ def run_heatmap(file_path, group_file, save_dir, group_colors=None, group_order=
         style=style,
     )
 
-    # ---------- Without Outliers ----------
-    X_no, dropped = _remove_extreme_feature_outliers(X, z_thresh=4.0)
-    dropped = dropped or []
-    outlier_dir = _ensure_dir(save_dir / "Without_outliers")
-    pd.DataFrame({"Removed_Features": dropped}).to_csv(
-        outlier_dir / "outlier_features.csv", index=False, encoding="utf-8-sig"
-    )
+    # # ---------- Without Outliers ----------
+    # X_no, dropped = _remove_extreme_feature_outliers(X, z_thresh=4.0)
+    # dropped = dropped or []
+    # outlier_dir = _ensure_dir(save_dir / "Without_outliers")
+    # pd.DataFrame({"Removed_Features": dropped}).to_csv(
+    #     outlier_dir / "outlier_features.csv", index=False, encoding="utf-8-sig"
+    # )
 
-    if X_no.shape[1] == 0:
-        print("[Heatmap] All features were flagged as outliers; skipping 'Without_outliers' run.", flush = True)
-        return
+    # if X_no.shape[1] == 0:
+    #     print("[Heatmap] All features were flagged as outliers; skipping 'Without_outliers' run.", flush = True)
+    #     return
 
-    _generate_all_heatmaps(
-        X=X_no,
-        y_groups=y,
-        feature_meta=feature_meta,
-        save_dir=save_dir,
-        suffix_label="Without_outliers",  # writes to save_dir / "Without_outliers"
-        group_colors=group_colors,
-        group_order=group_order,
-        per_class_heatmaps=True, min_features_per_class=5,
-        per_category_heatmaps=True, min_features_per_category=15,
-        class_to_category=None,  # or pass your explicit dict
-        per_carbon_heatmaps=True,
-        carbon_agg="sum",                 # or "mean"
-        min_features_per_carbon_bin=3,
-        style=style,
-    )
+    # _generate_all_heatmaps(
+    #     X=X_no,
+    #     y_groups=y,
+    #     feature_meta=feature_meta,
+    #     save_dir=save_dir,
+    #     suffix_label="Without_outliers",  # writes to save_dir / "Without_outliers"
+    #     group_colors=group_colors,
+    #     group_order=group_order,
+    #     per_class_heatmaps=True, min_features_per_class=5,
+    #     per_category_heatmaps=True, min_features_per_category=15,
+    #     class_to_category=None,  # or pass your explicit dict
+    #     per_carbon_heatmaps=True,
+    #     carbon_agg="sum",                 # or "mean"
+    #     min_features_per_carbon_bin=3,
+    #     style=style,
+    # )
 
-    print(f"[Heatmap] Completed. Output in: {save_dir}\n", flush = True)
+    # print(f"[Heatmap] Completed. Output in: {save_dir}\n", flush = True)
 
 
 def run_selected_lipid_heatmap(
@@ -1553,11 +1554,11 @@ def run_selected_lipid_heatmap(
     publication_theme: bool = False,
 ):
     file_path = Path(file_path)
-    save_dir = prepare_output_dir(Path(save_dir))
-    style = get_figure_style(publication_theme=publication_theme, dpi=dpi)
     selected_annotations = [str(x).strip() for x in (selected_annotations or []) if str(x).strip()]
     if not selected_annotations:
         raise ValueError("No annotations were selected for the heatmap.")
+    save_dir = prepare_output_dir(Path(save_dir))
+    style = get_figure_style(publication_theme=publication_theme, dpi=dpi)
 
     print("[Selected Heatmap] Running selected lipid heatmap...", flush=True)
     X, y, feature_meta = load_dataset(file_path, group_file)

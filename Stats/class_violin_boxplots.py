@@ -60,6 +60,16 @@ def _ensure_dir(p: str) -> str:
 def _sanitize_filename(s: str) -> str:
     return re.sub(r'[<>:."/\\|?*]', "_", str(s))
 
+def _is_semiquant_dataset(dataset_label: Optional[str], file_path: Optional[str] = None) -> bool:
+    dataset_text = str(dataset_label or "").strip().lower()
+    file_text = str(file_path or "").strip().lower()
+    return "annotated semi-quant" in dataset_text or "semi_quant" in file_text or "semi-quant" in file_text
+
+def _intensity_axis_label(dataset_label: Optional[str], file_path: Optional[str] = None) -> str:
+    if _is_semiquant_dataset(dataset_label, file_path):
+        return "Semi-quantitative abundance\n(normalized intensity x IS conc.)"
+    return "Summed intensity"
+
 # =========================
 # Plotting (SEPARATE violin and boxplot)
 # =========================
@@ -142,15 +152,16 @@ def _violin_one_class(
     strip: bool = True,
     jitter: bool = True,
     style: Optional[dict] = None,
+    y_label: str = "Summed intensity",
 ):
     style = style or get_figure_style(False, 100)
     title_fs = max(style["title_size"] + 4, 24)
     label_fs = max(style["label_size"] + 3, 20)
     tick_fs = max(style["tick_size"] + 3, 18)
-    fig, ax = plt.subplots(figsize=(9.5, 6.5), facecolor="white")
+    fig, ax = plt.subplots(figsize=(8.4, 5.6), facecolor="white")
     ax.set_facecolor("white")
     ax.set_axisbelow(True)
-    fig.subplots_adjust(left=0.12, right=0.98, top=0.86, bottom=0.30)
+    fig.subplots_adjust(left=0.12, right=0.98, top=0.88, bottom=0.26)
 
     ax.grid(False)
 
@@ -183,7 +194,7 @@ def _violin_one_class(
     ax.set_title(f"{class_name}: summed intensity by group", fontsize=title_fs, pad=16, fontweight="semibold")
     ax.set_xlabel(None)
     ax.xaxis.label.set_visible(False)
-    ax.set_ylabel("Summed intensity", fontsize=label_fs, labelpad=14)
+    ax.set_ylabel(y_label, fontsize=label_fs, labelpad=14)
     ax.set_xticks(range(len(order)))
     ax.set_xticklabels(order, rotation=45, ha="right", fontsize=tick_fs)
     ax.tick_params(axis="y", labelsize=tick_fs)
@@ -205,10 +216,10 @@ def _violin_one_class(
         spine.set_linewidth(1.0)
         spine.set_color("black")
 
-    fig.tight_layout(pad=1.2)
-    fig.savefig(out_png, dpi=style["dpi"], facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.1)
+    fig.tight_layout(pad=0.8)
+    fig.savefig(out_png, dpi=style["dpi"], facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.05)
     if out_svg:
-        fig.savefig(out_svg, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.1)
+        fig.savefig(out_svg, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.05)
     plt.close(fig)
 
 def _box_one_class(
@@ -221,25 +232,25 @@ def _box_one_class(
     strip: bool = True,
     jitter: bool = True,
     style: Optional[dict] = None,
+    y_label: str = "Summed intensity",
 ):
     style = style or get_figure_style(False, 100)
-    title_fs = max(style["title_size"] + 4, 24)
-    label_fs = max(style["label_size"] + 3, 20)
-    tick_fs = max(style["tick_size"] + 3, 18)
-    fig, ax = plt.subplots(figsize=(9.5, 6.5), facecolor="white")
+    title_fs = style["title_size"]
+    label_fs = style["label_size"]
+    tick_fs = style["tick_size"]
+    fig, ax = plt.subplots(figsize=(6.2, 5.0), facecolor="white")
     ax.set_facecolor("white")
     ax.set_axisbelow(True)
-    fig.subplots_adjust(left=0.12, right=0.98, top=0.86, bottom=0.30)
+    fig.subplots_adjust(left=0.12, right=0.98, top=0.85, bottom=0.32)
 
-    # Gridlines
-    ax.yaxis.grid(True, color="#D0D0D0", linestyle="--", linewidth=0.8, alpha=0.7)
-    ax.xaxis.grid(False)
+    ax.grid(False)
 
     # Boxplot with clear internal lines, no duplicate kwargs
     sns.boxplot(
         data=df, x="Group", y="Value",
         order=order,
         palette=[pal[g] for g in order],
+        width=0.58,
         showfliers=False,
         linewidth=0.0,
         whiskerprops=dict(color="gray", linewidth=0.6),
@@ -288,14 +299,14 @@ def _box_one_class(
     ax.set_title(f"{class_name}: summed intensity by group", fontsize=title_fs, pad=16, fontweight="semibold")
     ax.set_xlabel(None)
     ax.xaxis.label.set_visible(False)
-    ax.set_ylabel("Summed intensity", fontsize=label_fs, labelpad=14)
+    ax.set_ylabel(y_label, fontsize=label_fs, labelpad=14)
     ax.set_xticks(range(len(order)))
     ax.set_xticklabels(order, rotation=45, ha="right", fontsize=tick_fs)
     ax.tick_params(axis="y", labelsize=tick_fs)
 
     # Y limits
     vals = pd.to_numeric(df["Value"], errors="coerce").to_numpy()
-    ymin, ymax, fmt = _robust_ylim_from(vals)
+    ymin, ymax, fmt = _robust_ylim_no_zero_anchor(vals)
     ax.set_ylim(ymin, ymax)
     if isinstance(fmt, ticker.ScalarFormatter):
         ax.yaxis.set_major_formatter(fmt)
@@ -306,10 +317,10 @@ def _box_one_class(
     # Borders
     for spine in ax.spines.values():
         spine.set_visible(True)
-        spine.set_linewidth(1.0)
+        spine.set_linewidth(style["line_width"])
         spine.set_color("black")
 
-    fig.tight_layout(pad=1.2)
+    fig.tight_layout(pad=1.35)
     fig.savefig(out_png, dpi=style["dpi"], facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.1)
     if out_svg:
         fig.savefig(out_svg, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.1)
@@ -329,6 +340,8 @@ def run_from_stats(
     exclude_qc: bool = True,
     dpi: int = 100,
     publication_theme: bool = False,
+    dataset_label: Optional[str] = None,
+    **kwargs,
 ) -> Dict[str, str]:
     """
     Build class-level summaries from STATS CSV and produce, for each class:
@@ -341,6 +354,7 @@ def run_from_stats(
     base_out = prepare_output_dir(save_dir)
     style = get_figure_style(publication_theme=publication_theme, dpi=dpi)
     out_dir = _ensure_dir(os.path.join(base_out))
+    intensity_label = _intensity_axis_label(dataset_label, file_path)
 
     print('[Class plots] Running class-level violin and boxplots...', flush=True)
 
@@ -403,6 +417,7 @@ def run_from_stats(
             out_png=os.path.join(violin_dir, f"violin_{safe}.png"),
             out_svg=os.path.join(violin_dir, f"violin_{safe}.svg"),
             style=style,
+            y_label=intensity_label,
         )
         _box_one_class(
             df=plot_df[["Sample", "Group", "Value"]],
@@ -410,6 +425,7 @@ def run_from_stats(
             out_png=os.path.join(box_dir, f"boxplot_{safe}.png"),
             out_svg=os.path.join(box_dir, f"boxplot_{safe}.svg"),
             style=style,
+            y_label=intensity_label,
         )
     
     return {

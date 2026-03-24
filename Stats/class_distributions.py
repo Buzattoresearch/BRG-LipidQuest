@@ -20,7 +20,6 @@ from matplotlib.patches import Patch
 import matplotlib.lines as mlines
 
 # >>> use the same utils as other Stats modules
-from Stats.figure_style import build_group_palette as _shared_build_group_palette
 from Stats.utils import load_dataset, prepare_output_dir
 from Stats.utils import _CLASS_ORDER, _CLASS_ORDER_BACTERIA, _CLASS_ORDER_MAMMALIAN, _CLASS_ORDER_FUNGI, _CLASS_GROUP_MAP
 
@@ -235,18 +234,37 @@ def _order_labels(present: list[str], group_order: Optional[list[str]]) -> list[
     return gui + rest
 
 def _build_palette(labels: list[str], group_colors: Optional[dict]) -> dict[str, str]:
-    _, palette = _shared_build_group_palette(labels, group_colors=group_colors, group_order=labels)
+    """Return {group: hex} honoring GUI colors and extending with many distinct colors."""
+    palette = {}
+
+    # 1) start with GUI palette (exact keys only)
+    if isinstance(group_colors, dict):
+        for k, v in group_colors.items():
+            if isinstance(v, str) and re.fullmatch(r"#[0-9A-Fa-f]{6}", v):
+                palette[str(k)] = v.upper()
+
+    # 2) very long fallback wheel (60+ colors)
+    long_wheel = []
+    for cmap_name in ("tab10", "tab20b", "tab20c", "Set3", "Paired", "Accent"):
+        long_wheel += [matplotlib.colors.to_hex(c) for c in plt.get_cmap(cmap_name).colors]
+    # ensure deterministic, unique
+    seen = set()
+    long_wheel = [c.upper() for c in long_wheel if not (c.upper() in seen or seen.add(c.upper()))]
+
+    # 3) assign remaining groups from long wheel
+    i = 0
+    for g in labels:
+        if g not in palette:
+            palette[g] = long_wheel[i % len(long_wheel)]
+            i += 1
+
     return palette
 
 
 def _set_bubble_x_limits(ax: plt.Axes, x_tick_positions: List[float]) -> None:
     if not x_tick_positions:
         return
-    ax.set_xlim(x_tick_positions[0] - 0.18, x_tick_positions[-1] + 0.48)
-
-
-def _style_bubble_x_axis(ax: plt.Axes) -> None:
-    ax.tick_params(axis="x", labelsize=20, rotation=90, labelrotation=90, pad=1)
+    ax.set_xlim(x_tick_positions[0] - 0.28, x_tick_positions[-1] + 0.52)
 
 
 def _is_semiquant_dataset(dataset_label: Optional[str], file_path: Optional[str] = None) -> bool:
@@ -418,7 +436,7 @@ def plot_bubble(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[str]
     ax.set_title(title or "Lipid class abundance across groups (bubble size = # species)", fontsize=22, pad=15)
     
     # --- Axis label and tick font sizes ---
-    _style_bubble_x_axis(ax)
+    ax.tick_params(axis="x", labelsize=20, rotation=90, labelrotation=90)
     ax.tick_params(axis="y", labelsize=20)   
 
     # Alternating background bands (strongest readability gain)
@@ -448,9 +466,9 @@ def plot_bubble(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[str]
         ax.add_artist(leg2)  # add without replacing the first legend
 
     plt.subplots_adjust(
-        left=0.11,   # tighten the first class toward the y-axis
+        left=0.12,   # give y-label breathing room
         right=0.82,  # space for legends
-        bottom=0.23, # bring class labels a bit closer to the x-axis
+        bottom=0.25, # rotated class labels
         top=0.90
     )
     extras = []
@@ -578,7 +596,7 @@ def plot_bubble_log(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[
     ax.set_ylim(ymin_plot, ymax_plot)
     
     # --- Axis label and tick font sizes ---
-    _style_bubble_x_axis(ax)
+    ax.tick_params(axis="x", labelsize=20, rotation=90, labelrotation=90)
     ax.tick_params(axis="y", labelsize=20)   
 
     # Alternating background bands (strongest readability gain)
@@ -608,9 +626,9 @@ def plot_bubble_log(intensity_df: pd.DataFrame, out_png: str, out_svg: Optional[
         ax.add_artist(leg2)  # add without replacing the first legend
 
     plt.subplots_adjust(
-        left=0.11,   # tighten the first class toward the y-axis
+        left=0.12,   # give y-label breathing room
         right=0.82,  # space for legends
-        bottom=0.23, # bring class labels a bit closer to the x-axis
+        bottom=0.25, # rotated class labels
         top=0.90
     )
     extras = []

@@ -918,10 +918,11 @@ def _save_summary_tables(csv_dir: Path, output_csv: Path, output_excel: Path,
         ws1.append(row2)
 
         # Write data
-        # Reconstruct in the same order: meta then numeric
-        meta_part = combined_meta_reset[meta_cols].copy()
-        numeric_part = combined_numeric_reset.drop(columns=["UniqueID"]).copy()
-        full = pd.concat([meta_part, numeric_part], axis=1)
+        # Align by UniqueID before flattening for Excel so metadata and
+        # comparison statistics cannot drift onto different feature rows.
+        meta_part = combined_meta.copy()
+        numeric_part = combined_numeric.copy()
+        full = pd.concat([meta_part, numeric_part], axis=1, join="outer").reset_index()
 
         for _, r in full.iterrows():
             ws1.append(r.tolist())

@@ -39,6 +39,16 @@ def _build_group_palette(groups_like, group_colors=None, group_order=None):
 def _sanitize_filename(s: str) -> str:
     return re.sub(r'[<>:."/\\|?*]', "_", str(s))
 
+def _is_semiquant_dataset(dataset_label=None, file_path=None) -> bool:
+    dataset_text = str(dataset_label or "").strip().lower()
+    file_text = str(file_path or "").strip().lower()
+    return "annotated semi-quant" in dataset_text or "semi_quant" in file_text or "semi-quant" in file_text
+
+def _intensity_axis_label(dataset_label=None, file_path=None) -> str:
+    if _is_semiquant_dataset(dataset_label, file_path):
+        return "Semi-quantitative abundance\n(normalized intensity x IS conc.)"
+    return "Normalized peak intensity"
+
 def _nice_label(uid: str, meta_lookup: pd.DataFrame) -> str:
     """Prefer Annotation, else lipid strings from UniqueID."""
     if meta_lookup is not None and not meta_lookup.empty:
@@ -283,7 +293,9 @@ def run_boxplots(file_path, group_file, save_dir,
                  jitter=True,
                  palette="husl",
                  group_colors=None, group_order=None,
-                 publication_theme: bool = False):
+                 publication_theme: bool = False,
+                 dataset_label=None,
+                 **kwargs):
     """
     Generate one PNG + SVG boxplot per feature (lipid), grouped by sample group.
     - Uses load_dataset(file_path, group_file) like other Stats tools.
@@ -295,6 +307,7 @@ def run_boxplots(file_path, group_file, save_dir,
     out_dir = _ensure_dir(save_dir)
     plt.close('all')
     style = get_figure_style(publication_theme=publication_theme, dpi=dpi)
+    y_label = _intensity_axis_label(dataset_label, file_path)
 
     print('[Boxplots] Running boxplots (species level)...', flush = True)
     # Load standardized tables
@@ -341,7 +354,7 @@ def run_boxplots(file_path, group_file, save_dir,
             continue
 
         # Figure/axes on white
-        fig, ax = plt.subplots(figsize=(7.2, 5.0), facecolor="white")
+        fig, ax = plt.subplots(figsize=(6.2, 5.0), facecolor="white")
         ax.set_facecolor("white")
         ax.grid(False)
 
@@ -354,7 +367,7 @@ def run_boxplots(file_path, group_file, save_dir,
             palette=[color_map[g] for g in groups],   # use your palette
             order=groups,
             showfliers=False,
-            width=0.48,
+            width=0.58,
             ax=ax,                            
             linewidth=0.0,                            # no dark box edges
             whiskerprops=dict(color="gray", linewidth=0.6),
@@ -391,7 +404,7 @@ def run_boxplots(file_path, group_file, save_dir,
         ax.set_title(title, fontsize=style["title_size"], pad=12, fontweight="semibold")
         ax.set_xlabel(None)                 # clear any text
         ax.xaxis.label.set_visible(False)   # force-hide the label object
-        ax.set_ylabel("Normalized peak intensity", fontsize=style["label_size"], labelpad=12)
+        ax.set_ylabel(y_label, fontsize=style["label_size"], labelpad=12)
 
         # Rotate x tick labels
         plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=style["tick_size"])

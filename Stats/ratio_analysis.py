@@ -10,7 +10,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib import patches as mpatches
 import seaborn as sns
-from scipy.stats import kruskal
+from scipy.stats import kruskal, mannwhitneyu
 
 from Stats.figure_style import build_group_palette as _shared_build_group_palette, get_figure_style
 from Stats.utils import prepare_output_dir, _CLASS_GROUP_MAP
@@ -38,17 +38,20 @@ DEFAULT_CLASS_RATIO_DEFS = [
 
 DEFAULT_PRODUCT_RATIO_DEFS = [
     ("PC", "PE", "PC/PE"),
-    ("PG", "PE", "PG/PE"),
-    ("PA", "PE", "PA/PE"),
-    ("PA", "PC", "PA/PC"),
-    ("PA", "PG", "PA/PG"),
-    ("PS", "PE", "PS/PE"),
+    ("PE", "PS, PS-NAc", "PE/PS"),
+    ("PS", "PA", "PS/PA"),
+    ("PE", "PA", "PE/PA"),
+    ("PG", "PA", "PG/PA"),
     ("CL", "PG", "CL/PG"),
     ("MLCL", "CL", "MLCL/CL"),
     ("DLCL", "CL", "DLCL/CL"),
+    ("DG", "PA", "DG/PA"),
+    ("TG", "DG", "TG/DG"),
+    ("PE", "PG", "PE/PG"),
     ("LPE", "PE", "LPE/PE"),
     ("LPC", "PC", "LPC/PC"),
     ("LPG", "PG", "LPG/PG"),
+    ("LPA", "PA", "LPA/PA"),
     ("PEth", "PE", "PEth/PE"),
 ]
 
@@ -202,10 +205,14 @@ def _compute_ratio_stats(sample_ratios: pd.DataFrame, ordered_groups: List[str])
     rows = []
     for ratio_name, sub in sample_ratios.groupby("Ratio", sort=False):
         vectors = []
+        group_value_map = {}
         for group in ordered_groups:
-            vals = pd.to_numeric(sub.loc[sub["Group"].astype(str) == str(group), "Log2Ratio"], errors="coerce").dropna()
+            vals = pd.to_numeric(sub.loc[sub["Group"].astype(str) == str(group), "RawRatio"], errors="coerce").dropna()
             if len(vals) > 0:
                 vectors.append(vals.to_numpy(dtype=float))
+                group_value_map[str(group)] = vals.to_numpy(dtype=float).tolist()
+            else:
+                group_value_map[str(group)] = []
         if len(vectors) >= 2:
             try:
                 _, p_value = kruskal(*vectors)
@@ -215,16 +222,191 @@ def _compute_ratio_stats(sample_ratios: pd.DataFrame, ordered_groups: List[str])
             p_value = np.nan
 
         meta = sub.iloc[0][["Category"]].to_dict()
-        rows.append({
+        row = {
             "Ratio": ratio_name,
             "Category": meta["Category"],
             "Kruskal_p_value": p_value,
             "Groups_tested": int(len(vectors)),
-        })
+        }
+        for group in ordered_groups:
+            values = group_value_map.get(str(group), [])
+            row[f"RawRatios__{group}"] = "; ".join(f"{float(v):.12g}" for v in values)
+        rows.append(row)
     stats = pd.DataFrame(rows)
     if not stats.empty:
         stats["FDR_BH"] = _bh_fdr(stats["Kruskal_p_value"])
     return stats
+
+
+def _compute_ratio_pairwise_significance(sample_ratios: pd.DataFrame, ordered_groups: List[str]) -> dict[str, dict[str, object]]:
+    results: dict[str, dict[str, object]] = {}
+    omnibus_records = []
+    pairwise_records = []
+
+    for ratio_name, sub in sample_ratios.groupby("Ratio", sort=False):
+        grouped = {}
+        for group in ordered_groups:
+            vals = pd.to_numeric(
+                sub.loc[sub["Group"].astype(str) == str(group), "RawRatio"],
+                errors="coerce",
+            ).dropna()
+            if len(vals) > 0:
+                grouped[str(group)] = vals.to_numpy(dtype=float)
+
+        if len(grouped) < 2:
+            results[str(ratio_name)] = {"omnibus_p": np.nan, "omnibus_fdr": np.nan, "grouped_values": grouped, "pairs": []}
+            continue
+
+        try:
+            _, omnibus_p = kruskal(*grouped.values())
+        except Exception:
+            omnibus_p = np.nan
+        results[str(ratio_name)] = {"omnibus_p": omnibus_p, "omnibus_fdr": np.nan, "grouped_values": grouped, "pairs": []}
+        omnibus_records.append((str(ratio_name), omnibus_p))
+
+        groups = list(grouped.keys())
+        for i in range(len(groups)):
+            for j in range(i + 1, len(groups)):
+                g1, g2 = groups[i], groups[j]
+                try:
+                    _, pval = mannwhitneyu(
+                        grouped[g1],
+                        grouped[g2],
+                        alternative="two-sided",
+                        method="asymptotic",
+                        use_continuity=False,
+                    )
+                except Exception:
+                    pval = np.nan
+                pairwise_records.append((str(ratio_name), g1, g2, pval))
+
+    omnibus_fdr = _bh_fdr(pd.Series({ratio_name: p for ratio_name, p in omnibus_records}, dtype=float))
+    pairwise_p = pd.Series(
+        [p for _, _, _, p in pairwise_records],
+        index=pd.Index(range(len(pairwise_records))),
+        dtype=float,
+    )
+    pairwise_fdr = _bh_fdr(pairwise_p)
+
+    for ratio_name, _ in omnibus_records:
+        results[ratio_name]["omnibus_fdr"] = float(omnibus_fdr.get(ratio_name, np.nan))
+
+    for idx, (ratio_name, g1, g2, raw_p) in enumerate(pairwise_records):
+        fdr_val = float(pairwise_fdr.loc[idx]) if pd.notna(pairwise_fdr.loc[idx]) else np.nan
+        omnibus_p = results[ratio_name]["omnibus_p"]
+        omnibus_fdr_val = results[ratio_name]["omnibus_fdr"]
+        results[ratio_name]["pairs"].append({
+            "Group1": g1,
+            "Group2": g2,
+            "Raw_p_value": raw_p,
+            "FDR_BH": fdr_val,
+            "Significant": bool(
+                pd.notna(fdr_val)
+                and fdr_val < 0.05
+                and pd.notna(omnibus_fdr_val)
+                and omnibus_fdr_val < 0.05
+                and pd.notna(omnibus_p)
+            ),
+        })
+
+    return results
+
+
+def _ratio_pairwise_significance_to_frame(
+    pairwise_significance: dict[str, dict[str, object]],
+    ratio_category_map: Optional[Dict[str, str]] = None,
+) -> pd.DataFrame:
+    rows = []
+    category_map = ratio_category_map or {}
+    for ratio_name, payload in pairwise_significance.items():
+        omnibus_p = payload.get("omnibus_p", np.nan)
+        omnibus_fdr = payload.get("omnibus_fdr", np.nan)
+        grouped_values = payload.get("grouped_values", {}) or {}
+        pairs = payload.get("pairs", [])
+        category = category_map.get(str(ratio_name), "")
+        if not pairs:
+            rows.append({
+                "Ratio": ratio_name,
+                "Category": category,
+                "Omnibus_Kruskal_p": omnibus_p,
+                "Omnibus_Kruskal_FDR_BH": omnibus_fdr,
+                "Group1": "",
+                "Group2": "",
+                "Raw_p_value": np.nan,
+                "FDR_BH": np.nan,
+                "Significance": "",
+                "RawRatios__Group1": "",
+                "RawRatios__Group2": "",
+            })
+            continue
+        for pair in pairs:
+            fdr_val = pair["FDR_BH"]
+            if pd.notna(fdr_val) and fdr_val < 0.001:
+                stars = "***"
+            elif pd.notna(fdr_val) and fdr_val < 0.01:
+                stars = "**"
+            elif pd.notna(fdr_val) and fdr_val < 0.05:
+                stars = "*"
+            else:
+                stars = ""
+            rows.append({
+                "Ratio": ratio_name,
+                "Category": category,
+                "Omnibus_Kruskal_p": omnibus_p,
+                "Omnibus_Kruskal_FDR_BH": omnibus_fdr,
+                "Group1": pair["Group1"],
+                "Group2": pair["Group2"],
+                "Raw_p_value": pair["Raw_p_value"],
+                "FDR_BH": fdr_val,
+                "Significance": stars,
+                "RawRatios__Group1": "; ".join(
+                    f"{float(v):.12g}" for v in grouped_values.get(str(pair["Group1"]), [])
+                ),
+                "RawRatios__Group2": "; ".join(
+                    f"{float(v):.12g}" for v in grouped_values.get(str(pair["Group2"]), [])
+                ),
+            })
+    return pd.DataFrame(rows)
+
+
+def _add_pairwise_brackets(ax, dfp: pd.DataFrame, groups: List[str], sig_pairs: List[dict[str, object]]) -> None:
+    if not sig_pairs:
+        return
+
+    vals = pd.to_numeric(dfp["RawRatio"], errors="coerce").to_numpy(dtype=float)
+    finite = vals[np.isfinite(vals)]
+    if finite.size == 0:
+        return
+
+    significant_pairs = [pair for pair in sig_pairs if pair.get("Significant", False)]
+    if not significant_pairs:
+        return
+
+    current_ymin, current_ymax = ax.get_ylim()
+    data_span = max(float(np.nanmax(finite) - np.nanmin(finite)), 1e-12)
+    step = max(data_span * 0.045, abs(current_ymax) * 0.015, 0.015)
+    y = current_ymax + step * 0.15
+    x_pos = {g: i for i, g in enumerate(groups)}
+
+    for pair in significant_pairs:
+        g1, g2, fdr_val = pair["Group1"], pair["Group2"], pair["FDR_BH"]
+        if g1 not in x_pos or g2 not in x_pos:
+            continue
+        x1, x2 = x_pos[g1], x_pos[g2]
+        if x1 > x2:
+            x1, x2 = x2, x1
+        if pd.notna(fdr_val) and fdr_val < 0.001:
+            stars = "***"
+        elif pd.notna(fdr_val) and fdr_val < 0.01:
+            stars = "**"
+        else:
+            stars = "*"
+        bracket_top = y + step * 0.24
+        ax.plot([x1, x1, x2, x2], [y, bracket_top, bracket_top, y], color="black", linewidth=1.0, clip_on=False, zorder=5)
+        ax.text((x1 + x2) / 2, bracket_top + step * 0.08, stars, ha="center", va="bottom", fontsize=12, fontweight="bold", color="crimson", clip_on=False, zorder=6)
+        y += step * 0.65
+
+    ax.set_ylim(current_ymin, y + step * 0.18)
 
 
 def _ordered_ratio_index(index_like, preferred_order: Optional[List[str]]) -> List[str]:
@@ -434,6 +616,7 @@ def _plot_ratio_boxplot(
     title: str,
     style: Optional[dict] = None,
     group_colors: Optional[dict] = None,
+    pairwise_significance: Optional[dict[str, object]] = None,
 ) -> None:
     if df.empty:
         return
@@ -491,7 +674,7 @@ def _plot_ratio_boxplot(
                 rgba = tuple(fc[0]) if hasattr(fc, "__len__") and len(fc) and hasattr(fc[0], "__len__") else tuple(fc)
             except Exception:
                 rgba = mpl.colors.to_rgba(fc)
-            patch.set_facecolor((rgba[0], rgba[1], rgba[2], 0.30))
+            patch.set_facecolor((rgba[0], rgba[1], rgba[2], 0.25))
             patch.set_edgecolor((0, 0, 0, 0))
             patch.set_zorder(1)
 
@@ -513,11 +696,13 @@ def _plot_ratio_boxplot(
         ax.set_title(title, pad=14, fontweight="semibold")
         # ax.set_xlabel("Group", labelpad=12)
         ax.set_ylabel("Ratio of normalized peak intensities\n× IS concentration", labelpad=12)
-        ax.set_xticklabels(order, rotation=45, ha="right")
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
         for spine in ax.spines.values():
             spine.set_visible(True)
             spine.set_linewidth(1.0)
             spine.set_color("black")
+
+        _add_pairwise_brackets(ax, plot_df[["Group", "RawRatio"]].copy(), order, (pairwise_significance or {}).get("pairs", []))
 
         fig.tight_layout(pad=1.2)
         fig.savefig(out_png, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.1)
@@ -725,9 +910,21 @@ def run_from_stats(
     ).reset_index(drop=True)
 
     stats_df = _compute_ratio_stats(ratio_df, ordered_groups)
+    ratio_category_map = (
+        ratio_df[["Ratio", "Category"]]
+        .drop_duplicates(subset=["Ratio"])
+        .set_index("Ratio")["Category"]
+        .astype(str)
+        .to_dict()
+    )
+    pairwise_significance = _compute_ratio_pairwise_significance(ratio_df, ordered_groups)
+    pairwise_stats_df = _ratio_pairwise_significance_to_frame(pairwise_significance, ratio_category_map=ratio_category_map)
     group_means = (
-        ratio_df.groupby(["Category", "Ratio", "Group"], sort=False)["Log2Ratio"]
-        .mean()
+        ratio_df.groupby(["Category", "Ratio", "Group"], sort=False)
+        .agg(
+            MeanRawRatio=("RawRatio", "mean"),
+            MeanLog2Ratio=("Log2Ratio", "mean"),
+        )
         .reset_index()
     )
     stats_df["_category_rank"] = stats_df["Category"].astype(str).map(category_rank_map).fillna(len(category_rank_map)).astype(int)
@@ -749,13 +946,15 @@ def run_from_stats(
     sample_csv = os.path.join(out_dir, "sample_level_ratio_values.csv")
     group_csv = os.path.join(out_dir, "group_mean_log2_ratios.csv")
     stats_csv = os.path.join(out_dir, "ratio_statistics.csv")
+    pairwise_stats_csv = os.path.join(out_dir, "ratio_pairwise_statistics.csv")
     ratio_df.to_csv(sample_csv, index=False)
     group_means.to_csv(group_csv, index=False)
     stats_df.to_csv(stats_csv, index=False)
+    pairwise_stats_df.to_csv(pairwise_stats_csv, index=False)
 
     figure_paths: Dict[str, str] = {}
     for category, sub in group_means.groupby("Category", sort=False):
-        table = sub.pivot(index="Ratio", columns="Group", values="Log2Ratio").reindex(columns=ordered_groups)
+        table = sub.pivot(index="Ratio", columns="Group", values="MeanLog2Ratio").reindex(columns=ordered_groups)
         table = table.reindex(_ordered_ratio_index(table.index.tolist(), custom_ratio_orders.get(str(category))))
         cat_stats = stats_df[stats_df["Category"] == category].copy()
         row_labels = None
@@ -810,6 +1009,7 @@ def run_from_stats(
                 title=f"{ratio_name}",
                 style=style,
                 group_colors=group_colors,
+                pairwise_significance=pairwise_significance.get(str(ratio_name)),
             )
         figure_paths[f"{safe_cat}_boxplot_dir"] = str(boxplot_dir)
 
@@ -819,5 +1019,6 @@ def run_from_stats(
         "sample_level_ratio_csv": sample_csv,
         "group_mean_ratio_csv": group_csv,
         "ratio_statistics_csv": stats_csv,
+        "ratio_pairwise_statistics_csv": pairwise_stats_csv,
         **figure_paths,
     }

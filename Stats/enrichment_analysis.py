@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from typing import Dict, List, Optional
+from textwrap import fill
 
 import numpy as np
 import pandas as pd
@@ -188,6 +189,15 @@ def _bh_fdr(p_values: pd.Series) -> pd.Series:
     return out
 
 
+def _wrap_cbar_label(label: str, width: int = 18) -> str:
+    text = str(label or "").strip()
+    if not text:
+        return text
+    if len(text) <= width:
+        return text
+    return fill(text, width=width, max_lines=2)
+
+
 def _compute_enrichment_stats(
     sample_fraction_table: pd.DataFrame,
     ordered_groups: List[str],
@@ -343,7 +353,7 @@ def _plot_heatmap(
     ax.set_title(title, fontsize=style["title_size"], pad=14, fontweight="semibold")
 
     cbar = fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02)
-    cbar.set_label(cbar_label, labelpad=14, fontsize=style["label_size"])
+    cbar.set_label(_wrap_cbar_label(cbar_label), labelpad=14, fontsize=style["label_size"])
     cbar.ax.tick_params(labelsize=style["tick_size"])
 
     if significance_df is not None and significance_label_col and significance_label_col in significance_df.columns:
@@ -365,8 +375,8 @@ def _plot_heatmap(
                 )
 
     if note_text:
-        fig.subplots_adjust(bottom=0.30)
-        fig.text(0.5, 0.005, note_text, ha="center", va="bottom", fontsize=max(style["tick_size"] - 1, 9), color="dimgray")
+        fig.subplots_adjust(bottom=0.34)
+        fig.text(0.5, 0.001, note_text, ha="center", va="bottom", fontsize=max(style["tick_size"] - 1, 9), color="dimgray")
 
     fig.savefig(out_png, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.15)
     fig.savefig(out_svg, bbox_inches="tight", pad_inches=0.15)
