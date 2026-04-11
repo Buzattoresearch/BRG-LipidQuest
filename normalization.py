@@ -87,7 +87,7 @@ It saves:
 # Configuration switches
 # =======================
 qc_rsd_limit = 35
-sample_rsd_limit = 70
+sample_rsd_limit = 120
 MAX_QC_RSD_WORSEN_PCT = 20.0     # Allow QC RSD to increase by at most this % (relative) after normalization
 
 def _safe_rsd_series(s: pd.Series) -> float:
