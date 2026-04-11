@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib import ticker
 from matplotlib import collections as mcoll
+from scipy.stats import kruskal, ttest_ind
 
 from Stats.figure_style import build_group_palette as _shared_build_group_palette, get_figure_style
 from Stats.utils import load_dataset, prepare_output_dir
@@ -69,6 +70,144 @@ def _intensity_axis_label(dataset_label: Optional[str], file_path: Optional[str]
     if _is_semiquant_dataset(dataset_label, file_path):
         return "Semi-quantitative abundance\n(normalized intensity x IS conc.)"
     return "Summed intensity"
+
+
+def _bh_fdr(p_values: pd.Series) -> pd.Series:
+    p = pd.to_numeric(p_values, errors="coerce")
+    out = pd.Series(np.nan, index=p.index, dtype=float)
+    valid = p.dropna()
+    if valid.empty:
+        return out
+
+    order = np.argsort(valid.to_numpy(dtype=float))
+    ranked = valid.iloc[order]
+    n = len(ranked)
+    adj = ranked.to_numpy(dtype=float) * n / np.arange(1, n + 1)
+    adj = np.minimum.accumulate(adj[::-1])[::-1]
+    adj = np.clip(adj, 0, 1)
+    out.loc[ranked.index] = adj
+    return out
+
+
+def _welch_pvalue(x1, x2) -> float:
+    x1 = pd.Series(x1).replace([np.inf, -np.inf], np.nan).dropna().astype(float)
+    x2 = pd.Series(x2).replace([np.inf, -np.inf], np.nan).dropna().astype(float)
+    if len(x1) < 2 or len(x2) < 2:
+        return np.nan
+    try:
+        _, pval = ttest_ind(x1, x2, equal_var=False, nan_policy="omit")
+        return float(pval)
+    except Exception:
+        return np.nan
+
+
+def _compute_pairwise_class_stats(per_sample: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
+    rows = []
+    pairwise_indices = []
+
+    y_str = y.astype(str).reindex(per_sample.index)
+
+    for cls in per_sample.columns.astype(str):
+        class_vals = pd.to_numeric(per_sample[cls], errors="coerce")
+        dfp = pd.DataFrame({"Group": y_str.values, "Value": class_vals.values}).dropna(subset=["Value"])
+        grouped = {
+            str(group): vals.to_numpy(dtype=float)
+            for group, vals in dfp.groupby("Group")["Value"]
+            if len(vals) > 0
+        }
+
+        if len(grouped) < 2:
+            rows.append({
+                "Class": cls,
+                "Omnibus_Kruskal_p": np.nan,
+                "Omnibus_Kruskal_FDR_BH": np.nan,
+                "Group1": "",
+                "Group2": "",
+                "n_Group1": np.nan,
+                "n_Group2": np.nan,
+                "average_Group1": np.nan,
+                "average_Group2": np.nan,
+                "Fold Change (Group1/Group2)": np.nan,
+                "log2(Fold Change)": np.nan,
+                "Welch p-value": np.nan,
+                "FDR p-value": np.nan,
+            })
+            continue
+
+        try:
+            _, omnibus_p = kruskal(*grouped.values())
+        except Exception:
+            omnibus_p = np.nan
+
+        class_row_indices = []
+        groups = list(grouped.keys())
+        for i in range(len(groups)):
+            for j in range(i + 1, len(groups)):
+                g1, g2 = groups[i], groups[j]
+                vals1 = pd.Series(grouped[g1], dtype=float)
+                vals2 = pd.Series(grouped[g2], dtype=float)
+                mean1 = float(vals1.mean()) if len(vals1) else np.nan
+                mean2 = float(vals2.mean()) if len(vals2) else np.nan
+                fold_change = (
+                    float(mean1 / mean2)
+                    if pd.notna(mean1) and pd.notna(mean2) and abs(mean2) > 1e-12
+                    else np.nan
+                )
+                log2_fc = float(np.log2(fold_change)) if pd.notna(fold_change) and fold_change > 0 else np.nan
+                welch_p = _welch_pvalue(vals1, vals2)
+
+                rows.append({
+                    "Class": cls,
+                    "Omnibus_Kruskal_p": omnibus_p,
+                    "Omnibus_Kruskal_FDR_BH": np.nan,
+                    "Group1": g1,
+                    "Group2": g2,
+                    "n_Group1": int(len(vals1)),
+                    "n_Group2": int(len(vals2)),
+                    "average_Group1": mean1,
+                    "average_Group2": mean2,
+                    "Fold Change (Group1/Group2)": fold_change,
+                    "log2(Fold Change)": log2_fc,
+                    "Welch p-value": welch_p,
+                    "FDR p-value": np.nan,
+                })
+                class_row_indices.append(len(rows) - 1)
+                pairwise_indices.append(len(rows) - 1)
+
+        if not class_row_indices:
+            rows.append({
+                "Class": cls,
+                "Omnibus_Kruskal_p": omnibus_p,
+                "Omnibus_Kruskal_FDR_BH": np.nan,
+                "Group1": "",
+                "Group2": "",
+                "n_Group1": np.nan,
+                "n_Group2": np.nan,
+                "average_Group1": np.nan,
+                "average_Group2": np.nan,
+                "Fold Change (Group1/Group2)": np.nan,
+                "log2(Fold Change)": np.nan,
+                "Welch p-value": np.nan,
+                "FDR p-value": np.nan,
+            })
+
+    stats_df = pd.DataFrame(rows)
+    if stats_df.empty:
+        return stats_df
+
+    omnibus_map = (
+        stats_df.loc[:, ["Class", "Omnibus_Kruskal_p"]]
+        .drop_duplicates(subset=["Class"])
+        .set_index("Class")["Omnibus_Kruskal_p"]
+    )
+    omnibus_fdr = _bh_fdr(omnibus_map)
+    stats_df["Omnibus_Kruskal_FDR_BH"] = stats_df["Class"].map(omnibus_fdr)
+
+    if pairwise_indices:
+        pairwise_fdr = _bh_fdr(stats_df.loc[pairwise_indices, "Welch p-value"])
+        stats_df.loc[pairwise_indices, "FDR p-value"] = pairwise_fdr.values
+
+    return stats_df
 
 # =========================
 # Plotting (SEPARATE violin and boxplot)
@@ -389,6 +528,12 @@ def run_from_stats(
     # Outputs
     per_sample_csv = os.path.join(out_dir, "per_sample_class_totals.csv")
     per_sample.to_csv(per_sample_csv, index=False)
+    pairwise_stats_csv = os.path.join(out_dir, "class_pairwise_statistics.csv")
+    _compute_pairwise_class_stats(per_sample, y).to_csv(
+        pairwise_stats_csv,
+        index=False,
+        float_format="%.12g",
+    )
 
     melted_dir = _ensure_dir(os.path.join(out_dir, "PerClass_Melted"))
     violin_dir = _ensure_dir(os.path.join(out_dir, "PerClass_Violin"))
@@ -431,6 +576,7 @@ def run_from_stats(
     return {
     "out_dir": out_dir,
     "per_sample_class_totals_csv": per_sample_csv,
+    "class_pairwise_statistics_csv": pairwise_stats_csv,
     "per_class_melted_dir": melted_dir,
     "per_class_violin_dir": violin_dir,
     "per_class_box_dir": box_dir,

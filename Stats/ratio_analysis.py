@@ -10,7 +10,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib import patches as mpatches
 import seaborn as sns
-from scipy.stats import kruskal, mannwhitneyu
+from scipy.stats import kruskal, ttest_ind
 
 from Stats.figure_style import build_group_palette as _shared_build_group_palette, get_figure_style
 from Stats.utils import prepare_output_dir, _CLASS_GROUP_MAP
@@ -32,6 +32,12 @@ DEFAULT_CLASS_RATIO_DEFS = [
     ("DG", "PC", "DG/PC"),
     ("DG", "PE", "DG/PE"),
     ("DG", "PA", "DG/PA"),
+    ("CL", "PG", "CL/PG"),
+    ("PE", "PG", "PE/PG"),
+    ("PE", "PS", "PE/PS"),
+    ("PE", "PA", "PE/PA"),
+    ("PG", "PA", "PG/PA"),
+    ("PS", "PA", "PS/PA"),
     ("SM", "Cer", "SM/Cer"),
     ("CE", "ST", "CE/ST"),
 ]
@@ -52,7 +58,9 @@ DEFAULT_PRODUCT_RATIO_DEFS = [
     ("LPC", "PC", "LPC/PC"),
     ("LPG", "PG", "LPG/PG"),
     ("LPA", "PA", "LPA/PA"),
-    ("PEth", "PE", "PEth/PE"),
+    ("PEth", "PC", "PEth/PC"),
+    ("PEth", "PG", "PEth/PG"),
+    ("PEth", "CL", "PEth/CL"),
 ]
 
 
@@ -163,6 +171,18 @@ def _bh_fdr(p_values: pd.Series) -> pd.Series:
     return out
 
 
+def _welch_pvalue(x1, x2) -> float:
+    x1 = pd.Series(x1).replace([np.inf, -np.inf], np.nan).dropna().astype(float)
+    x2 = pd.Series(x2).replace([np.inf, -np.inf], np.nan).dropna().astype(float)
+    if len(x1) < 2 or len(x2) < 2:
+        return np.nan
+    try:
+        _, pval = ttest_ind(x1, x2, equal_var=False, nan_policy="omit")
+        return float(pval)
+    except Exception:
+        return np.nan
+
+
 def _compute_signal(X: pd.DataFrame, feature_mask: pd.Series) -> pd.Series:
     feats = feature_mask.index[feature_mask.fillna(False)].tolist()
     if not feats:
@@ -268,16 +288,7 @@ def _compute_ratio_pairwise_significance(sample_ratios: pd.DataFrame, ordered_gr
         for i in range(len(groups)):
             for j in range(i + 1, len(groups)):
                 g1, g2 = groups[i], groups[j]
-                try:
-                    _, pval = mannwhitneyu(
-                        grouped[g1],
-                        grouped[g2],
-                        alternative="two-sided",
-                        method="asymptotic",
-                        use_continuity=False,
-                    )
-                except Exception:
-                    pval = np.nan
+                pval = _welch_pvalue(grouped[g1], grouped[g2])
                 pairwise_records.append((str(ratio_name), g1, g2, pval))
 
     omnibus_fdr = _bh_fdr(pd.Series({ratio_name: p for ratio_name, p in omnibus_records}, dtype=float))
@@ -795,7 +806,10 @@ def run_from_stats(
     annotation_ratio_defs = settings["annotation_ratios"]
     class_ratio_order = [item["ratio_name"] for item in class_ratio_defs]
     product_ratio_order = [item["ratio_name"] for item in product_ratio_defs]
-    annotation_ratio_order = [item["ratio_name"] for item in annotation_ratio_defs]
+    annotation_ratio_orders: Dict[str, List[str]] = {}
+    for item in annotation_ratio_defs:
+        category = str(item.get("category", "Annotation-specific ratios")).strip() or "Annotation-specific ratios"
+        annotation_ratio_orders.setdefault(category, []).append(item["ratio_name"])
 
     if settings["include_selected_class_ratios"]:
         for ratio_def in class_ratio_defs:
@@ -845,8 +859,9 @@ def run_from_stats(
                     ratio_frames.append(ratio_df)
 
             class_carb = carb.reindex(mask.index)
-            if class_carb.notna().sum() >= 2:
-                threshold = float(class_carb[mask].median())
+            class_carb_values = class_carb[mask]
+            if class_carb_values.notna().sum() >= 2:
+                threshold = float(class_carb_values.median())
                 long_mask = mask & class_carb.gt(threshold)
                 short_mask = mask & class_carb.le(threshold)
                 if int(long_mask.sum()) > 0 and int(short_mask.sum()) > 0:
@@ -895,8 +910,8 @@ def run_from_stats(
     custom_ratio_orders = {
         "Class ratios": class_ratio_order,
         "Product/substrate-like ratios": product_ratio_order,
-        "Annotation-specific ratios": annotation_ratio_order,
     }
+    custom_ratio_orders.update(annotation_ratio_orders)
     ratio_category_order = list(dict.fromkeys(ratio_df["Category"].astype(str).tolist()))
     category_rank_map = {category: i for i, category in enumerate(ratio_category_order)}
     ratio_df["_category_rank"] = ratio_df["Category"].astype(str).map(category_rank_map).fillna(len(category_rank_map)).astype(int)
@@ -919,8 +934,9 @@ def run_from_stats(
     )
     pairwise_significance = _compute_ratio_pairwise_significance(ratio_df, ordered_groups)
     pairwise_stats_df = _ratio_pairwise_significance_to_frame(pairwise_significance, ratio_category_map=ratio_category_map)
+    ratio_df_for_means = ratio_df.dropna(subset=["RawRatio", "Log2Ratio"]).copy()
     group_means = (
-        ratio_df.groupby(["Category", "Ratio", "Group"], sort=False)
+        ratio_df_for_means.groupby(["Category", "Ratio", "Group"], sort=False)
         .agg(
             MeanRawRatio=("RawRatio", "mean"),
             MeanLog2Ratio=("Log2Ratio", "mean"),

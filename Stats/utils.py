@@ -27,7 +27,7 @@ _CLASS_ORDER_BACTERIA = [
     "MG", "DG", "TG", 
     "SQDG, SQMG",
     "HexDG, HexMG",
-    "PA", "LPA", "PC", "LPC", "PE", "LPE", "PEth", "PG", "LPG", "PS", "LPS",
+    "PA", "LPA", "PC", "LPC", "PE", "LPE", "PEth", "PG", "LPG", "PS, PS-NAc", "LPS",
     "CL", "MLCL", "DLCL", 
     "GP, Glc-GP",
     # "Cer", "HexCer, GlcCer", "MIPC, M(IP)2C",

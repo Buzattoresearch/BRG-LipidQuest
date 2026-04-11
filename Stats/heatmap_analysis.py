@@ -301,6 +301,20 @@ def _ordered_groups_present(groups: pd.Series, group_order=None) -> list[str]:
     return ordered + rest
 
 
+def _group_boundaries_from_sequence(groups: List[str]) -> list[int]:
+    labels = [str(g) for g in groups]
+    boundaries: list[int] = []
+    for idx in range(1, len(labels)):
+        if labels[idx] != labels[idx - 1]:
+            boundaries.append(idx)
+    return boundaries
+
+
+def _draw_group_separators(ax, boundaries: list[int], line_width: float = 1.8, alpha: float = 0.7, color: str = "#5f5f5f"):
+    for boundary in boundaries:
+        ax.axvline(boundary, color=color, linewidth=line_width, alpha=alpha, zorder=10)
+
+
 def _order_samples_by_group(X: pd.DataFrame, y: pd.Series, group_order=None) -> tuple[pd.DataFrame, pd.Series]:
     ordered_groups = _ordered_groups_present(y, group_order=group_order)
     sample_rank = {sample: i for i, sample in enumerate(X.index.astype(str).tolist())}
@@ -415,6 +429,7 @@ def _plot_selected_lipid_heatmap(
         col_colors, _legend_handles = _group_colorbar(y_groups, group_colors=group_colors, group_order=group_order)
         ordered_groups = _ordered_groups_present(y_groups, group_order=group_order)
         group_counts = y_groups.astype(str).value_counts()
+        boundary_positions = []
         centers = []
         start = 0
         for group in ordered_groups:
@@ -424,8 +439,9 @@ def _plot_selected_lipid_heatmap(
             end = start + count
             centers.append(((start + end - 1) / 2.0, group))
             if end < H.shape[1]:
-                ax.axvline(end, color="black", linewidth=0.8, alpha=0.35)
+                boundary_positions.append(end)
             start = end
+        _draw_group_separators(ax, boundary_positions, line_width=1.8, alpha=0.75)
         fig.subplots_adjust(left=0.24, right=0.88, bottom=0.2, top=0.82)
         fig.canvas.draw()
         heatmap_pos = ax.get_position()
@@ -455,6 +471,7 @@ def _plot_selected_lipid_heatmap(
             spine.set_color("white")
         for i in range(1, len(col_colors)):
             ax_bar.axvline(i - 0.5, color="white", linewidth=1)
+        _draw_group_separators(ax_bar, boundary_positions, line_width=2.0, alpha=0.95, color="white")
         ax_labels.set_xticks([])
         ax_labels.set_yticks([])
         ax_labels.set_frame_on(False)
@@ -554,6 +571,7 @@ def _plot_all_features_by_class_heatmap(
         col_colors, _legend_handles = _group_colorbar(ordered_groups, group_colors=group_colors, group_order=group_order)
         ordered_group_names = _ordered_groups_present(ordered_groups, group_order=group_order)
         group_counts = ordered_groups.astype(str).value_counts()
+        boundary_positions = []
         sample_centers = []
         start = 0
         for group in ordered_group_names:
@@ -563,8 +581,9 @@ def _plot_all_features_by_class_heatmap(
             end = start + count
             sample_centers.append(((start + end - 1) / 2.0, group))
             if end < H.shape[1]:
-                ax.axvline(end, color="black", linewidth=0.8, alpha=0.3)
+                boundary_positions.append(end)
             start = end
+        _draw_group_separators(ax, boundary_positions, line_width=1.9, alpha=0.75)
 
         class_boundaries = []
         class_labels = []
@@ -633,6 +652,7 @@ def _plot_all_features_by_class_heatmap(
             spine.set_color("white")
         for i in range(1, len(col_colors)):
             ax_bar.axvline(i - 0.5, color="white", linewidth=1)
+        _draw_group_separators(ax_bar, boundary_positions, line_width=2.1, alpha=0.95, color="white")
         ax_labels.set_xticks([])
         ax_labels.set_yticks([])
         ax_labels.set_frame_on(False)
@@ -866,6 +886,12 @@ def _plot_heatmap(
 
     ax_bottom.set_xticks([])
     ax_bottom.set_yticks([])
+
+    reordered_groups = y_groups.iloc[cg_annot.dendrogram_col.reordered_ind].astype(str).tolist()
+    boundary_positions = _group_boundaries_from_sequence(reordered_groups)
+    _draw_group_separators(cg_annot.ax_heatmap, boundary_positions, line_width=1.9, alpha=0.8)
+    _draw_group_separators(ax_top, boundary_positions, line_width=2.1, alpha=0.95, color="white")
+    _draw_group_separators(ax_bottom, boundary_positions, line_width=2.1, alpha=0.95, color="white")
 
     # --- Make x-ticks longer to push labels down naturally ---
     ax_heatmap.tick_params(axis="x", which="both", length=14)  # increase from default (~3-4)
@@ -1130,6 +1156,12 @@ def _plot_heatmap(
 
     ax_bottom.set_xticks([])
     ax_bottom.set_yticks([])
+
+    reordered_groups = y_groups.iloc[cg_uid.dendrogram_col.reordered_ind].astype(str).tolist()
+    boundary_positions = _group_boundaries_from_sequence(reordered_groups)
+    _draw_group_separators(cg_uid.ax_heatmap, boundary_positions, line_width=1.9, alpha=0.8)
+    _draw_group_separators(ax_top, boundary_positions, line_width=2.1, alpha=0.95, color="white")
+    _draw_group_separators(ax_bottom, boundary_positions, line_width=2.1, alpha=0.95, color="white")
 
     # --- Make x-ticks longer to push labels down naturally ---
     ax_heatmap.tick_params(axis="x", which="both", length=14)  # increase from default (~3-4)
@@ -1548,14 +1580,24 @@ def run_selected_lipid_heatmap(
     group_file,
     save_dir,
     selected_annotations: Optional[List[str]] = None,
+    selected_annotation_groups: Optional[Dict[str, List[str]]] = None,
     group_colors=None,
     group_order=None,
     dpi=100,
     publication_theme: bool = False,
 ):
     file_path = Path(file_path)
-    selected_annotations = [str(x).strip() for x in (selected_annotations or []) if str(x).strip()]
-    if not selected_annotations:
+    normalized_groups: dict[str, list[str]] = {}
+    for group_name, annotations in (selected_annotation_groups or {}).items():
+        clean_group = str(group_name).strip() or "Selected heatmap"
+        clean_annotations = [str(x).strip() for x in (annotations or []) if str(x).strip()]
+        if clean_annotations:
+            normalized_groups[clean_group] = clean_annotations
+    if not normalized_groups:
+        selected_annotations = [str(x).strip() for x in (selected_annotations or []) if str(x).strip()]
+        if selected_annotations:
+            normalized_groups["Selected heatmap"] = selected_annotations
+    if not normalized_groups:
         raise ValueError("No annotations were selected for the heatmap.")
     save_dir = prepare_output_dir(Path(save_dir))
     style = get_figure_style(publication_theme=publication_theme, dpi=dpi)
@@ -1589,67 +1631,92 @@ def run_selected_lipid_heatmap(
 
     X_ordered, y_ordered = _order_samples_by_group(X, y, group_order=group_order)
 
-    rows = []
-    found_annotations = []
-    missing_annotations = []
-    for annotation in selected_annotations:
-        uids = [uid for uid in annotation_to_uids.get(annotation, []) if uid in X_ordered.columns]
-        if not uids:
-            missing_annotations.append(annotation)
-            continue
-        signal = X_ordered.loc[:, uids].sum(axis=1)
-        rows.append(signal.rename(annotation))
-        found_annotations.append(annotation)
-
-    if not rows:
-        raise ValueError("None of the selected annotations were found in the dataset.")
-
-    heatmap_df = pd.DataFrame(rows)
-    heatmap_df.index = found_annotations
-    heatmap_df.columns = X_ordered.index.astype(str)
-
-    scaler = StandardScaler()
-    scaled = pd.DataFrame(
-        scaler.fit_transform(heatmap_df.T).T,
-        index=heatmap_df.index,
-        columns=heatmap_df.columns,
-    )
-
     out_dir = prepare_output_dir(save_dir / "Selected_Lipid_Heatmap")
-    raw_csv = out_dir / "selected_lipids_raw_abundance.csv"
-    scaled_csv = out_dir / "selected_lipids_autoscaled.csv"
-    missing_csv = out_dir / "selected_lipids_missing_annotations.csv"
     sample_order_csv = out_dir / "sample_order.csv"
-    selected_csv = out_dir / "selected_annotations_order.csv"
-
-    heatmap_df.to_csv(raw_csv, encoding="utf-8-sig")
-    scaled.to_csv(scaled_csv, encoding="utf-8-sig")
-    pd.DataFrame({"Annotation": selected_annotations, "Found": [a in found_annotations for a in selected_annotations]}).to_csv(selected_csv, index=False, encoding="utf-8-sig")
     pd.DataFrame({"Sample": X_ordered.index.astype(str), "Group": y_ordered.astype(str).values}).to_csv(sample_order_csv, index=False, encoding="utf-8-sig")
-    pd.DataFrame({"MissingAnnotation": missing_annotations}).to_csv(missing_csv, index=False, encoding="utf-8-sig")
 
-    png_path = out_dir / "selected_lipid_heatmap.png"
-    svg_path = out_dir / "selected_lipid_heatmap.svg"
-    _plot_selected_lipid_heatmap(
-        scaled,
-        y_ordered,
-        png_path,
-        svg_path,
-        group_colors=group_colors,
-        group_order=group_order,
-        style=style,
-    )
+    plot_outputs: dict[str, dict[str, str]] = {}
+    any_found = False
+    for group_name, selected_annotations in normalized_groups.items():
+        rows = []
+        found_annotations = []
+        missing_annotations = []
+        for annotation in selected_annotations:
+            uids = [uid for uid in annotation_to_uids.get(annotation, []) if uid in X_ordered.columns]
+            if not uids:
+                missing_annotations.append(annotation)
+                continue
+            signal = X_ordered.loc[:, uids].sum(axis=1)
+            rows.append(signal.rename(annotation))
+            found_annotations.append(annotation)
+
+        group_dir = prepare_output_dir(out_dir / _sanitize_filename(group_name))
+        selected_csv = group_dir / "selected_annotations_order.csv"
+        pd.DataFrame({"Annotation": selected_annotations, "Found": [a in found_annotations for a in selected_annotations]}).to_csv(
+            selected_csv,
+            index=False,
+            encoding="utf-8-sig",
+        )
+
+        if not rows:
+            missing_csv = group_dir / "selected_lipids_missing_annotations.csv"
+            pd.DataFrame({"MissingAnnotation": missing_annotations}).to_csv(missing_csv, index=False, encoding="utf-8-sig")
+            plot_outputs[group_name] = {
+                "out_dir": str(group_dir),
+                "selected_annotations_csv": str(selected_csv),
+                "missing_annotations_csv": str(missing_csv),
+            }
+            continue
+
+        any_found = True
+        heatmap_df = pd.DataFrame(rows)
+        heatmap_df.index = found_annotations
+        heatmap_df.columns = X_ordered.index.astype(str)
+
+        scaler = StandardScaler()
+        scaled = pd.DataFrame(
+            scaler.fit_transform(heatmap_df.T).T,
+            index=heatmap_df.index,
+            columns=heatmap_df.columns,
+        )
+
+        raw_csv = group_dir / "selected_lipids_raw_abundance.csv"
+        scaled_csv = group_dir / "selected_lipids_autoscaled.csv"
+        missing_csv = group_dir / "selected_lipids_missing_annotations.csv"
+        png_path = group_dir / "selected_lipid_heatmap.png"
+        svg_path = group_dir / "selected_lipid_heatmap.svg"
+
+        heatmap_df.to_csv(raw_csv, encoding="utf-8-sig")
+        scaled.to_csv(scaled_csv, encoding="utf-8-sig")
+        pd.DataFrame({"MissingAnnotation": missing_annotations}).to_csv(missing_csv, index=False, encoding="utf-8-sig")
+
+        _plot_selected_lipid_heatmap(
+            scaled,
+            y_ordered,
+            png_path,
+            svg_path,
+            group_colors=group_colors,
+            group_order=group_order,
+            style=style,
+        )
+        plot_outputs[group_name] = {
+            "out_dir": str(group_dir),
+            "raw_csv": str(raw_csv),
+            "scaled_csv": str(scaled_csv),
+            "selected_annotations_csv": str(selected_csv),
+            "missing_annotations_csv": str(missing_csv),
+            "heatmap_png": str(png_path),
+            "heatmap_svg": str(svg_path),
+        }
+
+    if not any_found:
+        raise ValueError("None of the selected annotations were found in the dataset.")
 
     print(f"[Selected Heatmap] Completed. Output in: {out_dir}", flush=True)
     return {
         "out_dir": str(out_dir),
-        "raw_csv": str(raw_csv),
-        "scaled_csv": str(scaled_csv),
-        "selected_annotations_csv": str(selected_csv),
         "sample_order_csv": str(sample_order_csv),
-        "missing_annotations_csv": str(missing_csv),
-        "heatmap_png": str(png_path),
-        "heatmap_svg": str(svg_path),
+        "plots": plot_outputs,
     }
 
 

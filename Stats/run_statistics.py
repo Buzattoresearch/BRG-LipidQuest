@@ -8,10 +8,13 @@ from Stats.class_distributions import run_from_stats as run_class_distributions
 from Stats.correlation_analysis import run_correlation_analysis
 from Stats.enrichment_analysis import run_from_stats as run_enrichment_analysis
 from Stats.heatmap_analysis import run_heatmap
+from Stats.hierarchical_clustering_analysis import run_hierarchical_clustering
 from Stats.pca_analysis import run_pca
 from Stats.plsda_analysis import run_plsda
+from Stats.random_forest_analysis import run_random_forest
 from Stats.ratio_analysis import run_from_stats as run_ratio_analysis
 from Stats.summed_intensity_per_class import run_from_stats as run_class_sums
+from Stats.tsne_analysis import run_tsne
 from Stats.upset_plot import run_from_stats as run_upset_plot
 from Stats.utils import prepare_output_dir
 from Stats.violinplots import run_violinplots
@@ -69,12 +72,30 @@ def run_all_statistics(
             print(f"[PCA Error] {e}")
 
         try:
+            run_tsne(file_path, group_file, save_dir, group_colors=group_colors, group_order=group_order)
+        except Exception as e:
+            print(f"[t-SNE Error] {e}")
+
+        try:
+            run_hierarchical_clustering(file_path, group_file, save_dir, group_colors=group_colors, group_order=group_order)
+        except Exception as e:
+            print(f"[Hierarchical Clustering Error] {e}")
+
+        try:
             if "Without_QCs" in dataset_name:
                 run_plsda(file_path, group_file, save_dir, group_colors=group_colors, group_order=group_order)
             else:
                 print(f"[PLS-DA] Skipped {dataset_name} (contains QCs).")
         except Exception as e:
             print(f"[PLS-DA Error] {e}")
+
+        try:
+            if "Without_QCs" in dataset_name:
+                run_random_forest(file_path, group_file, save_dir, group_colors=group_colors, group_order=group_order)
+            else:
+                print(f"[Random Forest] Skipped {dataset_name} (contains QCs).")
+        except Exception as e:
+            print(f"[Random Forest Error] {e}")
 
         try:
             if "Without_QCs" in dataset_name:

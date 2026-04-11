@@ -15,7 +15,10 @@ import json
 
 # analysis functions
 from Stats.pca_analysis import run_pca
+from Stats.hierarchical_clustering_analysis import run_hierarchical_clustering
+from Stats.tsne_analysis import run_tsne
 from Stats.plsda_analysis import run_plsda
+from Stats.random_forest_analysis import run_random_forest
 from Stats.heatmap_analysis import (
     get_available_annotations as get_available_heatmap_annotations,
     run_heatmap,
@@ -27,6 +30,7 @@ from Stats.violinplots import run_violinplots
 from Stats.correlation_analysis import run_correlation_analysis
 from Stats.class_distributions import run_from_stats as run_class_distributions
 from Stats.summed_intensity_per_class import run_from_stats as run_class_sums
+from Stats.total_intensity_analysis import run_from_stats as run_total_intensity_analysis
 from Stats.class_violin_boxplots import run_from_stats as run_class_violin_box
 from Stats.class_number_carbons_DB import run_from_stats as run_class_carbons_db
 from Stats.fatty_acid_motif_analysis import run_from_stats as run_fatty_acid_motif_analysis
@@ -42,6 +46,33 @@ from Stats.advanced_differential_analysis import run_from_stats as run_advanced_
 
 matplotlib.rcParams["figure.max_open_warning"] = 0  # suppress "too many open figures" warnings
 
+def _normalize_windows_io_path(path: Path) -> str:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path_str = str(path.resolve())
+    if os.name == "nt" and not path_str.startswith("\\\\?\\"):
+        path_str = f"\\\\?\\{path_str}"
+    return path_str
+
+def _to_csv_long_path(df: pd.DataFrame, path: Path, **kwargs):
+    df.to_csv(_normalize_windows_io_path(path), **kwargs)
+
+def _write_text_long_path(path: Path, text: str, encoding: str = "utf-8"):
+    Path(_normalize_windows_io_path(path)).write_text(text, encoding=encoding)
+
+def _normalize_volcano_test_type(selection: str) -> str:
+    value = str(selection or "").strip().lower()
+    mapping = {
+        "auto": "auto",
+        "welch's": "welch",
+        "welch": "welch",
+        "student's": "student",
+        "student": "student",
+        "mann-whitney": "mann-whitney",
+        "mann whitney": "mann-whitney",
+    }
+    return mapping.get(value, "auto")
+
 
 class StatisticsPage(tk.Toplevel):
     """
@@ -51,8 +82,8 @@ class StatisticsPage(tk.Toplevel):
         Annotated (pre-normalization): BeforeNorm_With_QCs / BeforeNorm_Without_QCs
         Unknowns: With_QCs / Without_QCs
     - Runs analyses per selected dataset family, respecting tool requirements:
-        * PCA runs on With_QCs variants
-        * PLS-DA / Volcano / Heatmap / Boxplots / Violin run on Without_QCs variants
+        * PCA / t-SNE / hierarchical clustering run on With_QCs variants
+        * PLS-DA / Random Forest / Volcano / Heatmap / Boxplots / Violin run on Without_QCs variants
         * Boxplots/Violin skip HighConf variants
     """
 
@@ -109,16 +140,19 @@ class StatisticsPage(tk.Toplevel):
         self.var_fdr = tk.StringVar(value="0.05")
         self.var_p   = tk.StringVar(value="0.05")
         self.var_dpi = tk.StringVar(value="100")
+        self.var_volcano_test = tk.StringVar(value="Welch's")
         self.var_publication_theme = tk.BooleanVar(value=False)
         self.var_volcano_labels = tk.BooleanVar(value=False)
+        self.var_volcano_comparison_summary = tk.StringVar(value="Comparisons: All pairwise comparisons")
+        self.selected_volcano_comparisons: list[tuple[str, str]] = []
         self.var_ratio_settings_summary = tk.StringVar(value="Default ratio settings")
         self.var_selected_heatmap_summary = tk.StringVar(value="Selected heatmap: no lipids selected")
 
         # Dataset selector state
-        self.var_dataset = tk.StringVar(value="Annotated (normalized and merged)")
+        self.var_dataset = tk.StringVar(value="Annotated semi-quant (normalized and merged)")
         self.ratio_settings = self._default_ratio_settings()
         self._load_ratio_settings()
-        self.selected_heatmap_annotations: list[str] = []
+        self.selected_heatmap_annotations: list[dict[str, str]] = []
         self._load_selected_heatmap_settings()
 
         # Try to reuse styles
@@ -174,51 +208,6 @@ class StatisticsPage(tk.Toplevel):
         ttk.Button(right_btns, text="Colors…", width=14, command=self.open_color_dialog).pack(side="right", padx=(8, 0))
         ttk.Button(right_btns, text="Select groups & output…", width=24, command=self.open_group_dialog).pack(side="right")
 
-        # === Analysis configuration ===
-        config = tk.Frame(self.main_frame, bg="white")
-        config.pack(fill="x", padx=24, pady=(6, 8))
-        config.grid_columnconfigure(0, weight=1)
-        config.grid_columnconfigure(1, weight=1)
-
-        volcano_panel = ttk.LabelFrame(config, text="Volcano Analysis")
-        volcano_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        volcano_panel.grid_columnconfigure(1, weight=1)
-        volcano_panel.grid_columnconfigure(3, weight=1)
-
-        ttk.Label(volcano_panel, text="Fold-change (FC ≥)", style="Body.TLabel").grid(row=0, column=0, sticky="e", padx=(8, 6), pady=(8, 4))
-        fc_entry = ttk.Entry(volcano_panel, textvariable=self.var_fc, width=10)
-        fc_entry.grid(row=0, column=1, sticky="w", pady=(8, 4))
-
-        ttk.Label(volcano_panel, text="FDR p <", style="Body.TLabel").grid(row=0, column=2, sticky="e", padx=(12, 6), pady=(8, 4))
-        fdr_entry = ttk.Entry(volcano_panel, textvariable=self.var_fdr, width=10)
-        fdr_entry.grid(row=0, column=3, sticky="w", pady=(8, 4))
-
-        ttk.Label(volcano_panel, text="raw p <", style="Body.TLabel").grid(row=1, column=0, sticky="e", padx=(8, 6), pady=(4, 4))
-        p_entry = ttk.Entry(volcano_panel, textvariable=self.var_p, width=10)
-        p_entry.grid(row=1, column=1, sticky="w", pady=(4, 4))
-
-        ttk.Checkbutton(volcano_panel, text="Volcano labels", variable=self.var_volcano_labels).grid(
-            row=1, column=2, columnspan=2, sticky="w", padx=(12, 0), pady=(4, 4)
-        )
-
-        self.volcano_button = ttk.Button(volcano_panel, text="Run Volcano Plot", width=22, command=self.run_volcano)
-        self.volcano_button.grid(row=2, column=0, columnspan=4, sticky="w", padx=8, pady=(8, 10))
-
-        figure_panel = ttk.LabelFrame(config, text="Figure Style")
-        figure_panel.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-        ttk.Label(figure_panel, text="Figure DPI", style="Body.TLabel").grid(row=0, column=0, sticky="e", padx=(8, 6), pady=(8, 4))
-        dpi_combo = ttk.Combobox(figure_panel, textvariable=self.var_dpi, state="readonly", width=8, values=["100", "150", "200", "300", "600"])
-        dpi_combo.grid(row=0, column=1, sticky="w", pady=(8, 4))
-        ttk.Checkbutton(figure_panel, text="Publication theme", variable=self.var_publication_theme).grid(
-            row=1, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 10)
-        )
-
-        def _sanitize_thresholds(_evt=None):
-            fc, fdr, p = self._get_volcano_thresholds()
-            self.var_fc.set(f"{fc:.3g}"); self.var_fdr.set(f"{fdr:.3g}"); self.var_p.set(f"{p:.3g}")
-        for e in (fc_entry, fdr_entry, p_entry):
-            e.bind("<FocusOut>", _sanitize_thresholds)
-
         # === Dataset selector ===
         ds = tk.Frame(self.main_frame, bg="white")
         ds.pack(fill="x", padx=24, pady=(8, 6))
@@ -266,19 +255,25 @@ class StatisticsPage(tk.Toplevel):
         multivariate_panel.grid_columnconfigure(0, weight=1)
         multivariate_panel.grid_columnconfigure(1, weight=1)
         self.pca_button = ttk.Button(multivariate_panel, text="Run PCA", width=25, command=self.run_pca)
+        self.tsne_button = ttk.Button(multivariate_panel, text="Run t-SNE", width=25, command=self.run_tsne)
+        self.hclust_button = ttk.Button(multivariate_panel, text="Run Hierarchical Clustering", width=25, command=self.run_hierarchical_clustering)
         self.plsda_button = ttk.Button(multivariate_panel, text="Run PLS-DA", width=25, command=self.run_plsda)
+        self.random_forest_button = ttk.Button(multivariate_panel, text="Run Random Forest", width=25, command=self.run_random_forest)
         self.heatmap_button = ttk.Button(multivariate_panel, text="Run Clustered Heatmap", width=25, command=self.run_heatmap)
         self.correlations_button = ttk.Button(multivariate_panel, text="Run Correlations", width=25, command=self.run_correlation_analysis)
         self.selected_heatmap_button = ttk.Button(multivariate_panel, text="Run Selected Lipid Heatmap", width=25, command=self.run_selected_heatmap)
         self.selected_heatmap_settings_button = ttk.Button(multivariate_panel, text="Select lipids for heatmap...", width=25, command=self.open_selected_heatmap_dialog)
         self.pca_button.grid(row=0, column=0, padx=8, pady=(8, 6), sticky="w")
-        self.plsda_button.grid(row=0, column=1, padx=8, pady=(8, 6), sticky="w")
-        self.heatmap_button.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="w")
-        self.correlations_button.grid(row=1, column=1, padx=8, pady=(0, 8), sticky="w")
-        self.selected_heatmap_button.grid(row=2, column=0, padx=8, pady=(0, 6), sticky="w")
-        self.selected_heatmap_settings_button.grid(row=2, column=1, padx=8, pady=(0, 6), sticky="w")
+        self.tsne_button.grid(row=0, column=1, padx=8, pady=(8, 6), sticky="w")
+        self.hclust_button.grid(row=1, column=0, padx=8, pady=(0, 6), sticky="w")
+        self.plsda_button.grid(row=1, column=1, padx=8, pady=(0, 6), sticky="w")
+        self.random_forest_button.grid(row=2, column=0, padx=8, pady=(0, 6), sticky="w")
+        self.heatmap_button.grid(row=2, column=1, padx=8, pady=(0, 6), sticky="w")
+        self.correlations_button.grid(row=3, column=0, padx=8, pady=(0, 8), sticky="w")
+        self.selected_heatmap_button.grid(row=3, column=1, padx=8, pady=(0, 8), sticky="w")
+        self.selected_heatmap_settings_button.grid(row=4, column=0, padx=8, pady=(0, 6), sticky="w")
         ttk.Label(multivariate_panel, textvariable=self.var_selected_heatmap_summary, style="Subtle.TLabel").grid(
-            row=3, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8)
+            row=5, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8)
         )
 
         univariate_panel = ttk.LabelFrame(tools, text="Univariate Analysis")
@@ -295,6 +290,7 @@ class StatisticsPage(tk.Toplevel):
         self.enrichment_button.grid(row=1, column=0, padx=8, pady=(0, 6), sticky="w")
         self.upset_button.grid(row=1, column=1, padx=8, pady=(0, 6), sticky="w")
         self.advanceddiff_button.grid(row=2, column=0, padx=8, pady=(0, 8), sticky="w")
+        self._update_volcano_comparison_summary()
 
         distributions_panel = ttk.LabelFrame(tools, text="Distributions")
         distributions_panel.grid(row=3, column=0, sticky="nsew", padx=(0, 8), pady=(0, 10))
@@ -305,11 +301,13 @@ class StatisticsPage(tk.Toplevel):
         self.classviolinbox_button = ttk.Button(distributions_panel, text="Run Class Violin+Boxplots", width=25, command=self.run_class_violin_box)
         self.classcarbons_button = ttk.Button(distributions_panel, text="Run Carbon# DB", width=25, command=self.run_class_carbons_db)
         self.famotif_button = ttk.Button(distributions_panel, text="Run FA Motif Analysis", width=25, command=self.run_fatty_acid_motif_analysis)
+        self.totalint_button = ttk.Button(distributions_panel, text="Run Total Intensity", width=25, command=self.run_total_intensity_analysis)
         self.classdist_button.grid(row=0, column=0, padx=8, pady=(8, 6), sticky="w")
         self.summint_button.grid(row=0, column=1, padx=8, pady=(8, 6), sticky="w")
         self.classviolinbox_button.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="w")
         self.classcarbons_button.grid(row=1, column=1, padx=8, pady=(0, 8), sticky="w")
         self.famotif_button.grid(row=2, column=0, padx=8, pady=(0, 8), sticky="w")
+        self.totalint_button.grid(row=2, column=1, padx=8, pady=(0, 8), sticky="w")
 
         ratio_panel = ttk.LabelFrame(tools, text="Ratio Analysis")
         ratio_panel.grid(row=3, column=1, sticky="nsew", padx=(8, 0), pady=(0, 10))
@@ -328,13 +326,85 @@ class StatisticsPage(tk.Toplevel):
             row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8)
         )
         
+        # === Analysis configuration ===
+        config = tk.Frame(self.main_frame, bg="white")
+        config.pack(fill="x", padx=24, pady=(6, 8))
+        config.grid_columnconfigure(0, weight=1)
+        config.grid_columnconfigure(1, weight=1)
+
+        volcano_panel = ttk.LabelFrame(config, text="Volcano Analysis")
+        volcano_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        volcano_panel.grid_columnconfigure(1, weight=1)
+        volcano_panel.grid_columnconfigure(3, weight=1)
+
+        ttk.Label(volcano_panel, text="Fold-change (FC ≥)", style="Body.TLabel").grid(row=0, column=0, sticky="e", padx=(8, 6), pady=(8, 4))
+        fc_entry = ttk.Entry(volcano_panel, textvariable=self.var_fc, width=10)
+        fc_entry.grid(row=0, column=1, sticky="w", pady=(8, 4))
+
+        ttk.Label(volcano_panel, text="FDR p <", style="Body.TLabel").grid(row=0, column=2, sticky="e", padx=(12, 6), pady=(8, 4))
+        fdr_entry = ttk.Entry(volcano_panel, textvariable=self.var_fdr, width=10)
+        fdr_entry.grid(row=0, column=3, sticky="w", pady=(8, 4))
+
+        ttk.Label(volcano_panel, text="raw p <", style="Body.TLabel").grid(row=1, column=0, sticky="e", padx=(8, 6), pady=(4, 4))
+        p_entry = ttk.Entry(volcano_panel, textvariable=self.var_p, width=10)
+        p_entry.grid(row=1, column=1, sticky="w", pady=(4, 4))
+
+        ttk.Label(volcano_panel, text="Statistical test", style="Body.TLabel").grid(row=1, column=2, sticky="e", padx=(12, 6), pady=(4, 4))
+        test_combo = ttk.Combobox(
+            volcano_panel,
+            textvariable=self.var_volcano_test,
+            state="readonly",
+            width=14,
+            values=["Welch's", "Student's", "Mann-Whitney"],
+        )
+        test_combo.grid(row=1, column=3, sticky="w", pady=(4, 4))
+        ttk.Label(
+            volcano_panel,
+            text="Welch's is the default test. Mann-Whitney is reported as a robustness check in the output tables.",
+            style="Subtle.TLabel",
+            justify="left",
+        ).grid(row=2, column=2, columnspan=2, sticky="w", padx=(12, 8), pady=(0, 4))
+
+        ttk.Checkbutton(volcano_panel, text="Volcano labels", variable=self.var_volcano_labels).grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=(8, 0), pady=(4, 4)
+        )
+
+        ttk.Button(volcano_panel, text="Select comparisons...", width=18, command=self.open_volcano_comparison_dialog).grid(
+            row=3, column=0, sticky="w", padx=8, pady=(4, 4)
+        )
+        ttk.Label(
+            volcano_panel,
+            textvariable=self.var_volcano_comparison_summary,
+            style="Subtle.TLabel",
+            justify="left",
+        ).grid(row=3, column=1, columnspan=3, sticky="w", padx=(6, 8), pady=(4, 4))
+
+        self.volcano_button = ttk.Button(volcano_panel, text="Run Volcano Plot", width=22, command=self.run_volcano)
+        self.volcano_button.grid(row=4, column=0, columnspan=4, sticky="w", padx=8, pady=(8, 10))
+
+        figure_panel = ttk.LabelFrame(config, text="Figure Style")
+        figure_panel.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        ttk.Label(figure_panel, text="Figure DPI", style="Body.TLabel").grid(row=0, column=0, sticky="e", padx=(8, 6), pady=(8, 4))
+        dpi_combo = ttk.Combobox(figure_panel, textvariable=self.var_dpi, state="readonly", width=8, values=["100", "150", "200", "300", "600"])
+        dpi_combo.grid(row=0, column=1, sticky="w", pady=(8, 4))
+        ttk.Checkbutton(figure_panel, text="Publication theme", variable=self.var_publication_theme).grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 10)
+        )
+
+        def _sanitize_thresholds(_evt=None):
+            fc, fdr, p = self._get_volcano_thresholds()
+            self.var_fc.set(f"{fc:.3g}"); self.var_fdr.set(f"{fdr:.3g}"); self.var_p.set(f"{p:.3g}")
+        for e in (fc_entry, fdr_entry, p_entry):
+            e.bind("<FocusOut>", _sanitize_thresholds)
+
+
         # Auto-prepare on first open
         self.after(200, self._auto_prepare_or_warn)
 
         # Disable buttons if required files are missing
         if self.missing_files:
             for btn in (self.pca_button, self.plsda_button, self.heatmap_button, self.selected_heatmap_button, self.selected_heatmap_settings_button, self.volcano_button, self.boxplots_button, self.violin_button,
-                self.correlations_button, self.classdist_button, self.summint_button, self.classviolinbox_button, self.classcarbons_button, self.famotif_button,
+                self.correlations_button, self.classdist_button, self.summint_button, self.classviolinbox_button, self.classcarbons_button, self.famotif_button, self.totalint_button,
                 self.enrichment_button, self.ratio_button, self.ratio_settings_button, self.upset_button, self.advanceddiff_button):
                 btn.config(state="disabled")
             self._add_tooltip(tools, f"Missing files: {', '.join(self.missing_files)}")
@@ -514,7 +584,8 @@ class StatisticsPage(tk.Toplevel):
         if rs["include_selected_product_ratios"]:
             parts.append(f"{len(rs['selected_product_ratios'])} product")
         if rs["annotation_ratios"]:
-            parts.append(f"{len(rs['annotation_ratios'])} annotation")
+            annotation_plot_n = len({str(item.get("category", "")).strip() for item in rs["annotation_ratios"] if str(item.get("category", "")).strip()})
+            parts.append(f"{len(rs['annotation_ratios'])} annotation in {annotation_plot_n} plot(s)")
         if rs["include_structural_class_ratios"]:
             parts.append("class-structural")
         if rs["include_global_structural_ratios"]:
@@ -574,33 +645,61 @@ class StatisticsPage(tk.Toplevel):
     def _selected_heatmap_settings_path(self) -> Path:
         return self._get_stats_dir() / "selected_heatmap_annotations.json"
 
+    def _normalize_selected_heatmap_annotations(self, items) -> list[dict[str, str]]:
+        normalized: list[dict[str, str]] = []
+        for item in (items or []):
+            if isinstance(item, dict):
+                annotation = str(item.get("annotation", "")).strip()
+                plot_group = str(item.get("plot_group", "")).strip() or "Selected heatmap"
+            else:
+                annotation = str(item).strip()
+                plot_group = "Selected heatmap"
+            if not annotation:
+                continue
+            normalized.append({
+                "annotation": annotation,
+                "plot_group": plot_group,
+            })
+        return normalized
+
+    def _selected_heatmap_groups(self) -> dict[str, list[str]]:
+        grouped: dict[str, list[str]] = {}
+        for item in self._normalize_selected_heatmap_annotations(getattr(self, "selected_heatmap_annotations", [])):
+            grouped.setdefault(item["plot_group"], []).append(item["annotation"])
+        return grouped
+
     def _update_selected_heatmap_summary(self):
-        count = len(getattr(self, "selected_heatmap_annotations", []))
+        grouped = self._selected_heatmap_groups()
+        count = sum(len(items) for items in grouped.values())
+        plot_count = len(grouped)
         if count == 0:
             text = "Selected heatmap: no lipids selected"
         else:
-            text = f"Selected heatmap: {count} lipid{'s' if count != 1 else ''} selected"
+            text = f"Selected heatmap: {count} lipid{'s' if count != 1 else ''} in {plot_count} plot{'s' if plot_count != 1 else ''}"
         self.var_selected_heatmap_summary.set(text)
 
     def _load_selected_heatmap_settings(self):
         p = self._selected_heatmap_settings_path()
-        items: list[str] = []
+        items: list[dict[str, str]] = []
         if p.exists():
             try:
                 payload = json.loads(p.read_text(encoding="utf-8"))
-                items = [str(x).strip() for x in payload.get("selected_annotations", []) if str(x).strip()]
+                if isinstance(payload, dict) and "selected_annotation_groups" in payload:
+                    items = self._normalize_selected_heatmap_annotations(payload.get("selected_annotation_groups", []))
+                else:
+                    items = self._normalize_selected_heatmap_annotations(payload.get("selected_annotations", []))
             except Exception:
                 items = []
         self.selected_heatmap_annotations = items
         self._update_selected_heatmap_summary()
 
     def _save_selected_heatmap_settings(self):
-        cleaned = [str(x).strip() for x in getattr(self, "selected_heatmap_annotations", []) if str(x).strip()]
+        cleaned = self._normalize_selected_heatmap_annotations(getattr(self, "selected_heatmap_annotations", []))
         self.selected_heatmap_annotations = cleaned
         self._update_selected_heatmap_summary()
         try:
             self._selected_heatmap_settings_path().write_text(
-                json.dumps({"selected_annotations": cleaned}, indent=2),
+                json.dumps({"selected_annotation_groups": cleaned}, indent=2),
                 encoding="utf-8",
             )
         except Exception:
@@ -622,38 +721,48 @@ class StatisticsPage(tk.Toplevel):
         frame.grid_rowconfigure(3, weight=1)
 
         ttk.Label(frame, text="Choose lipids for the unclustered heatmap", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        helper_text = "Type to jump to matching annotations; the selected order becomes the heatmap row order."
+        helper_text = "Type to jump to matching annotations; assign each lipid to a plot group, and the selected order becomes the row order within that heatmap."
         ttk.Label(frame, text=helper_text, style="Subtle.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 8))
 
         controls = tk.Frame(frame, bg="white")
         controls.grid(row=2, column=0, sticky="ew")
         controls.grid_columnconfigure(1, weight=1)
+        controls.grid_columnconfigure(3, weight=1)
 
         ann_var = tk.StringVar()
+        plot_group_var = tk.StringVar(value="Selected heatmap")
         ttk.Label(controls, text="Lipid annotation", style="Body.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
-        ann_combo = ttk.Combobox(controls, textvariable=ann_var, values=annotation_values, width=60)
-        ann_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        ann_combo = ttk.Combobox(controls, textvariable=ann_var, values=annotation_values, width=42)
+        ann_combo.grid(row=0, column=1, sticky="ew", padx=(0, 10))
         self._enable_annotation_typeahead(ann_combo, annotation_values)
+        ttk.Label(controls, text="Plot group", style="Body.TLabel").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        ttk.Entry(controls, textvariable=plot_group_var, width=30).grid(row=0, column=3, sticky="ew")
 
-        selected_tree = ttk.Treeview(frame, columns=("annotation",), show="headings", height=10)
+        selected_tree = ttk.Treeview(frame, columns=("annotation", "plot_group"), show="headings", height=10)
         selected_tree.heading("annotation", text="Selected lipids in heatmap order")
-        selected_tree.column("annotation", width=520, anchor="w")
+        selected_tree.heading("plot_group", text="Plot group")
+        selected_tree.column("annotation", width=440, anchor="w")
+        selected_tree.column("plot_group", width=220, anchor="w")
         selected_tree.grid(row=3, column=0, sticky="nsew", pady=(8, 0))
 
-        selected_rows = [str(x).strip() for x in self.selected_heatmap_annotations if str(x).strip()]
+        selected_rows = self._normalize_selected_heatmap_annotations(self.selected_heatmap_annotations)
 
         def _refresh_tree():
             selected_tree.delete(*selected_tree.get_children(""))
             for idx, item in enumerate(selected_rows):
-                selected_tree.insert("", "end", iid=str(idx), values=(item,))
+                selected_tree.insert("", "end", iid=str(idx), values=(item["annotation"], item["plot_group"]))
 
         _refresh_tree()
 
         def _add_selected():
             annotation = ann_var.get().strip()
+            plot_group = plot_group_var.get().strip() or "Selected heatmap"
             if not annotation:
                 return
-            selected_rows.append(annotation)
+            selected_rows.append({
+                "annotation": annotation,
+                "plot_group": plot_group,
+            })
             _refresh_tree()
             ann_var.set("")
 
@@ -688,7 +797,7 @@ class StatisticsPage(tk.Toplevel):
         actions.grid(row=5, column=0, sticky="e", pady=(12, 0))
 
         def _save_and_close():
-            self.selected_heatmap_annotations = [str(x).strip() for x in selected_rows if str(x).strip()]
+            self.selected_heatmap_annotations = self._normalize_selected_heatmap_annotations(selected_rows)
             self._save_selected_heatmap_settings()
             dlg.destroy()
 
@@ -755,7 +864,7 @@ class StatisticsPage(tk.Toplevel):
             ttk.Checkbutton(product_box, text=item["ratio_name"], variable=var).grid(row=idx, column=0, sticky="w", padx=8, pady=2)
 
         ttk.Label(frame, text="Annotation-specific ratios", style="Section.TLabel").grid(row=4, column=0, columnspan=4, sticky="w", pady=(12, 4))
-        helper_text = "Choose from the current no-QC dataset" if annotation_values else "No prepared no-QC dataset found yet; manual entry still works"
+        helper_text = "Choose from the current no-QC dataset; assign each annotation ratio to a plot group" if annotation_values else "No prepared no-QC dataset found yet; manual entry still works"
         ttk.Label(frame, text=helper_text, style="Subtle.TLabel").grid(row=5, column=0, columnspan=4, sticky="w", pady=(0, 6))
 
         ann_controls = tk.Frame(frame, bg="white")
@@ -766,6 +875,7 @@ class StatisticsPage(tk.Toplevel):
         ann_num_var = tk.StringVar()
         ann_den_var = tk.StringVar()
         ann_name_var = tk.StringVar()
+        ann_category_var = tk.StringVar(value="Annotation-specific ratios")
 
         ttk.Label(ann_controls, text="Numerator", style="Body.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
         num_combo = ttk.Combobox(ann_controls, textvariable=ann_num_var, values=annotation_values, width=42)
@@ -777,14 +887,18 @@ class StatisticsPage(tk.Toplevel):
         self._enable_annotation_typeahead(den_combo, annotation_values)
         ttk.Label(ann_controls, text="Label", style="Body.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=(8, 0))
         ttk.Entry(ann_controls, textvariable=ann_name_var, width=42).grid(row=1, column=1, sticky="ew", pady=(8, 0))
+        ttk.Label(ann_controls, text="Plot group", style="Body.TLabel").grid(row=1, column=2, sticky="w", padx=(0, 6), pady=(8, 0))
+        ttk.Entry(ann_controls, textvariable=ann_category_var, width=42).grid(row=1, column=3, sticky="ew", pady=(8, 0))
 
-        ann_tree = ttk.Treeview(frame, columns=("ratio", "numerator", "denominator"), show="headings", height=7)
+        ann_tree = ttk.Treeview(frame, columns=("ratio", "numerator", "denominator", "plot"), show="headings", height=7)
         ann_tree.heading("ratio", text="Ratio")
         ann_tree.heading("numerator", text="Numerator")
         ann_tree.heading("denominator", text="Denominator")
+        ann_tree.heading("plot", text="Plot group")
         ann_tree.column("ratio", width=220, anchor="w")
         ann_tree.column("numerator", width=260, anchor="w")
         ann_tree.column("denominator", width=260, anchor="w")
+        ann_tree.column("plot", width=220, anchor="w")
         ann_tree.grid(row=7, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
         frame.grid_rowconfigure(7, weight=1)
 
@@ -793,14 +907,14 @@ class StatisticsPage(tk.Toplevel):
         def _refresh_annotation_tree():
             ann_tree.delete(*ann_tree.get_children(""))
             for idx, item in enumerate(annotation_rows):
-                ann_tree.insert("", "end", iid=str(idx), values=(item["ratio_name"], item["numerator"], item["denominator"]))
+                ann_tree.insert("", "end", iid=str(idx), values=(item["ratio_name"], item["numerator"], item["denominator"], item["category"]))
 
         for item in settings["annotation_ratios"]:
             annotation_rows.append({
                 "numerator": item["numerator"],
                 "denominator": item["denominator"],
                 "ratio_name": item["ratio_name"],
-                "category": "Annotation-specific ratios",
+                "category": item.get("category", "Annotation-specific ratios"),
             })
         _refresh_annotation_tree()
 
@@ -808,6 +922,7 @@ class StatisticsPage(tk.Toplevel):
             numerator = ann_num_var.get().strip()
             denominator = ann_den_var.get().strip()
             ratio_name = ann_name_var.get().strip() or f"{numerator}/{denominator}"
+            category = ann_category_var.get().strip() or "Annotation-specific ratios"
             if not numerator or not denominator:
                 messagebox.showwarning("Missing annotation", "Choose both numerator and denominator annotations.", parent=dlg)
                 return
@@ -815,7 +930,7 @@ class StatisticsPage(tk.Toplevel):
                 "numerator": numerator,
                 "denominator": denominator,
                 "ratio_name": ratio_name,
-                "category": "Annotation-specific ratios",
+                "category": category,
             })
             _refresh_annotation_tree()
             ann_name_var.set("")
@@ -928,10 +1043,8 @@ class StatisticsPage(tk.Toplevel):
         n_unk = len(self.df_unknowns) if getattr(self, "df_unknowns", None) is not None else 0
         n_bfn = len(self.df_before_norm) if getattr(self, "df_before_norm", None) is not None else 0
         n_grp = len(self.df_groups) if getattr(self, "df_groups", None) is not None else 0
-        return (f"Loaded {n_ann} annotated compounds\n"
-                f"Loaded {n_ann_semi} annotated semi-quant compounds\n"
-                f"Loaded {n_unk} unknown features\n"
-                f"Loaded {n_bfn} rows from Before-Normalization file\n"
+        return (f"Loaded {n_ann} annotated compounds {n_ann_semi} annotated semi-quant compounds, \n"
+                f"{n_unk} unknown features, and {n_bfn} rows from Before-Normalization file.\n"
                 f"Loaded {n_grp} sample group assignments")
 
     # ==========================================================
@@ -1020,6 +1133,59 @@ class StatisticsPage(tk.Toplevel):
             label_groups = ", ".join(dlg.selected_groups) if dlg.selected_groups else "All"
             order_note = f"\nOrder: [{', '.join(self.group_order)}]" if self.group_order else ""
             self.selection_label.config(text=f"Selection: [{label_groups}]\n{self.session_dir}{order_note}")
+            self._sanitize_volcano_comparisons()
+
+    def _volcano_available_comparisons(self) -> list[tuple[str, str]]:
+        active_groups = [str(g).strip() for g in self._active_groups() if str(g).strip()]
+        active_groups = [g for g in active_groups if g.upper() != "QC"]
+        if self.group_order:
+            ordered = [g for g in self.group_order if g in active_groups and g.upper() != "QC"]
+            active_groups = ordered + [g for g in active_groups if g not in ordered]
+        else:
+            active_groups = sorted(dict.fromkeys(active_groups))
+        return [(g1, g2) for g1 in active_groups for g2 in active_groups if g1 != g2]
+
+    @staticmethod
+    def _format_volcano_comparison(comp: tuple[str, str]) -> str:
+        return f"{comp[0]} vs {comp[1]}"
+
+    def _sanitize_volcano_comparisons(self) -> list[tuple[str, str]]:
+        available = self._volcano_available_comparisons()
+        available_set = set(available)
+        self.selected_volcano_comparisons = [
+            comp for comp in self.selected_volcano_comparisons if comp in available_set
+        ]
+        self._update_volcano_comparison_summary()
+        return self.selected_volcano_comparisons
+
+    def _update_volcano_comparison_summary(self):
+        available = self._volcano_available_comparisons()
+        selected = self.selected_volcano_comparisons
+        if not available:
+            text = "Comparisons: unavailable until at least 2 groups are prepared"
+        elif not selected:
+            text = f"Comparisons: All pairwise comparisons ({len(available)})"
+        else:
+            labels = [self._format_volcano_comparison(comp) for comp in selected[:3]]
+            extra = "" if len(selected) <= 3 else f", +{len(selected) - 3} more"
+            text = f"Comparisons: {', '.join(labels)}{extra}"
+        self.var_volcano_comparison_summary.set(text)
+
+    def open_volcano_comparison_dialog(self):
+        available = self._volcano_available_comparisons()
+        if len(available) == 0:
+            messagebox.showwarning(
+                "No comparisons available",
+                "Prepare datasets or select at least 2 non-QC groups first.",
+            )
+            return
+
+        self._sanitize_volcano_comparisons()
+        dlg = VolcanoComparisonDialog(self, available, self.selected_volcano_comparisons)
+        self.wait_window(dlg)
+        if getattr(dlg, "success", False):
+            self.selected_volcano_comparisons = dlg.selected_comparisons
+            self._update_volcano_comparison_summary()
 
     # ==========================================================
     # TOOLTIP
@@ -1224,11 +1390,42 @@ class StatisticsPage(tk.Toplevel):
         self._worker_thread = threading.Thread(target=self._run_analysis, args=("PCA",), daemon=True, name="LQ-StatsWorker-PCA")
         self._worker_thread.start()
 
+    def run_tsne(self):
+        if self._is_running:
+            self._toast("Another analysis is already running")
+            return
+        self._worker_thread = threading.Thread(target=self._run_analysis, args=("t-SNE",), daemon=True, name="LQ-StatsWorker-tSNE")
+        self._worker_thread.start()
+
+    def run_hierarchical_clustering(self):
+        if self._is_running:
+            self._toast("Another analysis is already running")
+            return
+        self._worker_thread = threading.Thread(
+            target=self._run_analysis,
+            args=("Hierarchical_Clustering",),
+            daemon=True,
+            name="LQ-StatsWorker-HClust",
+        )
+        self._worker_thread.start()
+
     def run_plsda(self):
         if self._is_running: 
             self._toast("Another analysis is already running")
             return
         self._worker_thread = threading.Thread(target=self._run_analysis, args=("PLS-DA",), daemon=True, name="LQ-StatsWorker-PLSDA")
+        self._worker_thread.start()
+
+    def run_random_forest(self):
+        if self._is_running:
+            self._toast("Another analysis is already running")
+            return
+        self._worker_thread = threading.Thread(
+            target=self._run_analysis,
+            args=("Random_Forest",),
+            daemon=True,
+            name="LQ-StatsWorker-RandomForest",
+        )
         self._worker_thread.start()
 
     def run_heatmap(self):
@@ -1242,7 +1439,7 @@ class StatisticsPage(tk.Toplevel):
         if self._is_running:
             self._toast("Another analysis is already running")
             return
-        if not self.selected_heatmap_annotations:
+        if not self._selected_heatmap_groups():
             self._toast("Choose lipids for the selected heatmap first")
             return
         self._worker_thread = threading.Thread(
@@ -1372,6 +1569,18 @@ class StatisticsPage(tk.Toplevel):
             name="LQ-StatsWorker-FAMotifs",
         )
         self._worker_thread.start()
+
+    def run_total_intensity_analysis(self):
+        if self._is_running:
+            self._toast("Another analysis is already running")
+            return
+        self._worker_thread = threading.Thread(
+            target=self._run_analysis,
+            args=("Total_Intensity",),
+            daemon=True,
+            name="LQ-StatsWorker-TotalIntensity",
+        )
+        self._worker_thread.start()
         
     def run_all(self):
         if self._is_running:
@@ -1388,7 +1597,7 @@ class StatisticsPage(tk.Toplevel):
             return
         stopped = False
         try:
-            order = ["PCA", "PLS-DA", "Heatmap", "Selected_Heatmap", "Correlations", "Class_Distributions", "Class_Sums", "Class_violin_box", "Class_Carbons_DB", "FA_Motifs", "Enrichment", "Ratios", "Advanced_Differential", "UpSet", "Volcano", "Boxplots", "Violin",]
+            order = ["PCA", "t-SNE", "Hierarchical_Clustering", "PLS-DA", "Heatmap", "Selected_Heatmap", "Correlations", "Class_Distributions", "Class_Sums", "Class_violin_box", "Class_Carbons_DB", "FA_Motifs", "Total_Intensity", "Enrichment", "Ratios", "Advanced_Differential", "UpSet", "Volcano", "Boxplots", "Violin",]
             for at in order:
                 self._toast(f"Running {at}…")
                 self._run_analysis(at, _sequence_mode=True)
@@ -1561,7 +1770,7 @@ class StatisticsPage(tk.Toplevel):
                     continue
 
                 # Tool-specific gating
-                needs_no_qc = {"PLS-DA", "Volcano", "Heatmap", "Selected_Heatmap", "Boxplots", "Violin", "Correlations", "Class_Distributions", "Class_Sums", "Class_violin_box", "Class_Carbons_DB", "FA_Motifs", "Enrichment", "Ratios", "Advanced_Differential", "UpSet"}
+                needs_no_qc = {"PLS-DA", "Random_Forest", "Volcano", "Heatmap", "Selected_Heatmap", "Boxplots", "Violin", "Correlations", "Class_Distributions", "Class_Sums", "Class_violin_box", "Class_Carbons_DB", "FA_Motifs", "Enrichment", "Ratios", "Advanced_Differential", "UpSet"}
                 label_upper = str(label).upper()
                 is_no_qc_label = (
                     "WITHOUT_QCS" in label_upper
@@ -1602,8 +1811,38 @@ class StatisticsPage(tk.Toplevel):
                             dpi=figure_dpi,
                             publication_theme=publication_theme,
                         )
+                    elif analysis_type == "t-SNE":
+                        run_tsne(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_colors=palette,
+                            group_order=self.group_order,
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                        )
+                    elif analysis_type == "Hierarchical_Clustering":
+                        run_hierarchical_clustering(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_colors=palette,
+                            group_order=self.group_order,
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                        )
                     elif analysis_type == "PLS-DA":
                         run_plsda(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_colors=palette,
+                            group_order=self.group_order,
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                        )
+                    elif analysis_type == "Random_Forest":
+                        run_random_forest(
                             fpath,
                             matched_group_file,
                             subfolder,
@@ -1623,16 +1862,18 @@ class StatisticsPage(tk.Toplevel):
                             publication_theme=publication_theme,
                         )
                     elif analysis_type == "Selected_Heatmap":
-                        selected_annotations = [
-                            str(x).strip() for x in (self.selected_heatmap_annotations or []) if str(x).strip()
-                        ]
-                        if not selected_annotations:
+                        selected_annotation_groups = {
+                            group_name: annotations
+                            for group_name, annotations in self._selected_heatmap_groups().items()
+                            if annotations
+                        }
+                        if not selected_annotation_groups:
                             raise ValueError("No annotations were selected for the heatmap.")
                         run_selected_lipid_heatmap(
                             fpath,
                             matched_group_file,
                             subfolder,
-                            selected_annotations=selected_annotations,
+                            selected_annotation_groups=selected_annotation_groups,
                             group_colors=palette,
                             group_order=self.group_order,
                             dpi=figure_dpi,
@@ -1640,11 +1881,16 @@ class StatisticsPage(tk.Toplevel):
                         )
                     elif analysis_type == "Volcano":
                         fc, fdr, p = self._get_volcano_thresholds()
+                        selected_comparisons = self._sanitize_volcano_comparisons()
+                        volcano_mode_dir = subfolder / ("Volcano_selected" if selected_comparisons else "Volcano_all")
+                        test_type = _normalize_volcano_test_type(self.var_volcano_test.get())
                         run_volcano(
-                            fpath, matched_group_file, subfolder,
+                            fpath, matched_group_file, volcano_mode_dir,
                             sample_type=self.sample_type,
+                            test_type=test_type,
                             p_value_threshold=p, fdr_threshold=fdr, fold_change_threshold=fc,
                             group_colors=palette, group_order=self.group_order,
+                            selected_comparisons=selected_comparisons,
                             annotate_labels=bool(self.var_volcano_labels.get()),
                             dpi=figure_dpi, publication_theme=publication_theme,
                         )
@@ -1705,6 +1951,17 @@ class StatisticsPage(tk.Toplevel):
                         )
                     elif analysis_type == "Class_Carbons_DB":
                         run_class_carbons_db(fpath, matched_group_file, subfolder, group_colors=palette, group_order=self.group_order, exclude_qc=True,)
+                    elif analysis_type == "Total_Intensity":
+                        run_total_intensity_analysis(
+                            fpath,
+                            matched_group_file,
+                            subfolder,
+                            group_colors=palette,
+                            group_order=self.group_order,
+                            dataset_label=self.var_dataset.get(),
+                            dpi=figure_dpi,
+                            publication_theme=publication_theme,
+                        )
                     elif analysis_type == "Enrichment":
                         run_enrichment_analysis(
                             fpath,
@@ -1903,8 +2160,11 @@ class StatisticsPage(tk.Toplevel):
         aligned["__order"] = aligned["Sample"].map({s: i for i, s in enumerate(data_sample_cols)})
         aligned = aligned.sort_values("__order").drop(columns="__order").reset_index(drop=True)
 
-        out_path = out_dir / f"{dataset_path.stem}__sample_groups_matched.csv"
-        aligned.to_csv(out_path, index=False, encoding="utf-8-sig")
+        stem_slug = re.sub(r"[^A-Za-z0-9._-]+", "_", dataset_path.stem).strip("._")
+        stem_slug = stem_slug[:48] if stem_slug else "dataset"
+        stem_hash = hashlib.sha1(str(dataset_path).encode("utf-8")).hexdigest()[:10]
+        out_path = out_dir / f"{stem_slug}__{stem_hash}__sample_groups.csv"
+        _to_csv_long_path(aligned, out_path, index=False, encoding="utf-8-sig")
         return out_path
     
     # ==========================================================
@@ -2082,7 +2342,7 @@ class StatisticsPage(tk.Toplevel):
 
             # Save the cleaned, session-specific groups
             try:
-                df_groups.to_csv(stats_dir / "sample_groups_cleaned.csv", index=False, encoding="utf-8-sig")
+                _to_csv_long_path(df_groups, stats_dir / "sample_groups_cleaned.csv", index=False, encoding="utf-8-sig")
             except Exception:
                 print("[Warning] Could not create cleaned sample_groups file:", flush=True)
                 print(traceback.format_exc(), flush=True)
@@ -2110,10 +2370,10 @@ class StatisticsPage(tk.Toplevel):
             def _save_with_T(df, meta_cols, samples, base_name):
                 path = stats_dir / base_name
                 df_to_save = df[meta_cols + samples]
-                df_to_save.to_csv(path, index=False, encoding="utf-8-sig")
+                _to_csv_long_path(df_to_save, path, index=False, encoding="utf-8-sig")
                 transposed = df_to_save.set_index("UniqueID").transpose()
                 transposed.index.name = "UniqueID"
-                (stats_dir / f"{path.stem}_T.csv").write_text(transposed.to_csv(index=True), encoding="utf-8")
+                _write_text_long_path(stats_dir / f"{path.stem}_T.csv", transposed.to_csv(index=True), encoding="utf-8")
 
             # ---------- Annotated (normalized) ----------
             df_ann = pd.read_csv(ann_path, low_memory=False)
@@ -2682,7 +2942,7 @@ class GroupSelectionDialog(tk.Toplevel):
         df = df[df["Group"].isin(sel)].copy()
         df["Sample"] = df["Sample"].astype(str).str.strip()
         df = df.drop_duplicates(subset=["Sample"], keep="first").reset_index(drop=True)
-        df.to_csv(Path(self.session_dir) / "sample_groups_cleaned.csv", index=False, encoding="utf-8-sig")
+        _to_csv_long_path(df, Path(self.session_dir) / "sample_groups_cleaned.csv", index=False, encoding="utf-8-sig")
 
         full_in_listbox_order = [self.listbox.get(i) for i in range(self.listbox.size())]
         ordered_sel = [g for g in full_in_listbox_order if g in sel]
@@ -2695,3 +2955,99 @@ class GroupSelectionDialog(tk.Toplevel):
 
     def _cancel(self):
         self.destroy()
+
+
+class VolcanoComparisonDialog(tk.Toplevel):
+    def __init__(
+        self,
+        parent: "StatisticsPage",
+        comparisons: list[tuple[str, str]],
+        selected_comparisons: list[tuple[str, str]],
+    ):
+        super().__init__(parent)
+        self.title("Select Volcano Comparisons")
+        self.configure(bg="white")
+        self.transient(parent)
+        self.grab_set()
+
+        self.success = False
+        self._comparison_labels = [parent._format_volcano_comparison(comp) for comp in comparisons]
+        selected_labels = {parent._format_volcano_comparison(comp) for comp in selected_comparisons}
+
+        frame = tk.Frame(self, bg="white")
+        frame.pack(fill="both", expand=True, padx=16, pady=12)
+
+        ttk.Label(frame, text="Volcano comparisons", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            frame,
+            text="Select specific comparisons to run. Leave everything unselected to run all comparisons.",
+            style="Subtle.TLabel",
+            justify="left",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 8))
+
+        self.listbox = tk.Listbox(frame, selectmode="multiple", exportselection=False, height=14, width=42)
+        self.listbox.grid(row=2, column=0, sticky="nsew")
+
+        for idx, label in enumerate(self._comparison_labels):
+            self.listbox.insert(tk.END, label)
+            if label in selected_labels:
+                self.listbox.selection_set(idx)
+
+        btns = tk.Frame(frame, bg="white")
+        btns.grid(row=2, column=1, sticky="n", padx=(10, 0))
+        ttk.Button(btns, text="Select All", width=16, command=lambda: self.listbox.select_set(0, tk.END)).pack(pady=2)
+        ttk.Button(btns, text="Clear", width=16, command=lambda: self.listbox.selection_clear(0, tk.END)).pack(pady=2)
+        ttk.Button(btns, text="Move Up", width=16, command=self._move_up).pack(pady=(10, 2))
+        ttk.Button(btns, text="Move Down", width=16, command=self._move_down).pack(pady=2)
+
+        ttk.Label(
+            frame,
+            text=f"{len(comparisons)} directed comparisons available",
+            style="Subtle.TLabel",
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        actions = tk.Frame(frame, bg="white")
+        actions.grid(row=4, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ttk.Button(actions, text="Cancel", width=12, command=self.destroy).pack(side="right", padx=6)
+        ttk.Button(actions, text="Use selection", width=16, command=self._confirm).pack(side="right", padx=6)
+
+        self.resizable(False, False)
+        self.update_idletasks()
+        self.geometry(f"+{parent.winfo_rootx()+120}+{parent.winfo_rooty()+120}")
+
+    def _confirm(self):
+        indices = list(self.listbox.curselection())
+        self.selected_comparisons = [
+            tuple(label.split(" vs ", 1))
+            for label in (self.listbox.get(i) for i in indices)
+        ]
+        self.success = True
+        self.destroy()
+
+    def _move_up(self):
+        sel = list(self.listbox.curselection())
+        if not sel:
+            return
+        for i in sel:
+            if i == 0:
+                continue
+            text = self.listbox.get(i)
+            self.listbox.delete(i)
+            self.listbox.insert(i - 1, text)
+        self.listbox.selection_clear(0, tk.END)
+        for i in [max(0, s - 1) for s in sel]:
+            self.listbox.selection_set(i)
+
+    def _move_down(self):
+        sel = list(self.listbox.curselection())
+        if not sel:
+            return
+        for i in reversed(sel):
+            if i == self.listbox.size() - 1:
+                continue
+            text = self.listbox.get(i)
+            self.listbox.delete(i)
+            self.listbox.insert(i + 1, text)
+        self.listbox.selection_clear(0, tk.END)
+        for i in [min(self.listbox.size() - 1, s + 1) for s in sel]:
+            self.listbox.selection_set(i)

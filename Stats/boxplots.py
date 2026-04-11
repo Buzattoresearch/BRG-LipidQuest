@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib import ticker
 from matplotlib.patches import PathPatch, Rectangle
-from scipy.stats import kruskal, mannwhitneyu
+from scipy.stats import kruskal, ttest_ind
 
 from Stats.utils import prepare_output_dir
 from Stats.figure_style import build_group_palette as _shared_build_group_palette, get_figure_style
@@ -133,6 +133,18 @@ def _bh_fdr(p_values: pd.Series) -> pd.Series:
     return out
 
 
+def _welch_pvalue(x1, x2) -> float:
+    x1 = pd.Series(x1).replace([np.inf, -np.inf], np.nan).dropna().astype(float)
+    x2 = pd.Series(x2).replace([np.inf, -np.inf], np.nan).dropna().astype(float)
+    if len(x1) < 2 or len(x2) < 2:
+        return np.nan
+    try:
+        _, pval = ttest_ind(x1, x2, equal_var=False, nan_policy="omit")
+        return float(pval)
+    except Exception:
+        return np.nan
+
+
 def _compute_pairwise_significance(X: pd.DataFrame, y: pd.Series) -> dict[str, dict[str, object]]:
     results: dict[str, dict[str, object]] = {}
     y_str = y.astype(str).reset_index(drop=True)
@@ -162,16 +174,7 @@ def _compute_pairwise_significance(X: pd.DataFrame, y: pd.Series) -> dict[str, d
         for i in range(len(groups)):
             for j in range(i + 1, len(groups)):
                 g1, g2 = groups[i], groups[j]
-                try:
-                    _, pval = mannwhitneyu(
-                        grouped[g1],
-                        grouped[g2],
-                        alternative="two-sided",
-                        method="asymptotic",
-                        use_continuity=False,
-                    )
-                except Exception:
-                    pval = np.nan
+                pval = _welch_pvalue(grouped[g1], grouped[g2])
                 pairwise_records.append((uid, g1, g2, pval))
 
     omnibus_fdr = _bh_fdr(pd.Series({uid: p for uid, p in omnibus_records}, dtype=float))

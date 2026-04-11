@@ -10,7 +10,7 @@ from matplotlib import patches as mpatches
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from scipy.stats import kruskal, mannwhitneyu
+from scipy.stats import kruskal, ttest_ind
 
 from Stats.figure_style import build_group_palette as _shared_build_group_palette, get_figure_style
 from Stats.utils import prepare_output_dir, load_dataset
@@ -24,33 +24,15 @@ sns.set_style("white")
 
 
 DEFAULT_FATTY_ACID_CHAIN_PANEL = [
-    "14:0", "14:1",
-    "15:0", "15:1",
-    "16:0", "16:1",
-    "17:0", "17:1",
-    "18:0", "18:1", "18:2", "18:3",
-    "19:0", "19:1",
-    "20:0", "20:1", "20:2", "20:3", "20:4", "20:5", "20:6",
-    "21:0", "21:1",
-    "22:0", "22:1", "22:2", "22:3", "22:4", "22:5", "22:6",
-    "24:0", "24:1",
-    "26:0", 
+    f"{carbons}:{double_bonds}"
+    for carbons in range(12, 26)
+    for double_bonds in range(0, 7)
 ]
 
 DEFAULT_FATTY_ACID_SUM_COMPOSITION_PANEL = [
-    "28:0", "28:1",
-    "29:0", "29:1",
-    "30:0", "30:1", "30:2",
-    "31:0", "31:1", "31:2",
-    "32:0", "32:1", "32:2", "32:3",
-    "33:0", "33:1", "33:2", "33:3",
-    "34:0", "34:1", "34:2", "34:3", "34:4",
-    "35:0", "35:1", "35:2", "35:3", "35:4",
-    "36:0", "36:1", "36:2", "36:3", "36:4", "36:5", "36:6",
-    "37:0", "37:1", "37:2", "37:3", "37:4", "37:5", "37:6",
-    "38:0", "38:1", "38:2", "38:3", "38:4", "38:5", "38:6", "38:7",
-    "39:0", "39:1", "39:2", "39:3", "39:4", "39:5", "39:6", "39:7",
-    "40:0", "40:1", "40:2", "40:3", "40:4", "40:5", "40:6", "40:7", "40:8",
+    f"{carbons}:{double_bonds}"
+    for carbons in range(27, 80)
+    for double_bonds in range(0, 7)
 ]
 
 _MOTIF_RE = re.compile(r"(?<!\d)(\d{1,2}:\d{1,2})(?!\d)")
@@ -58,6 +40,11 @@ _LYSO_OR_SINGLE_CHAIN_CLASSES = {
     "FA", "FAHFA", "CAR", "CoA", "CE", "ST", "MG", "LPC", "LPE", "LPG", "LPI",
     "LPA", "LPS", "LPE O-", "LPC O-", "LPG O-", "LPA O-", "LPI O-", "LPS O-",
     "NA", "NAE", "NAT", "NATx", "NAx", "FAL", "FAG", "FOH", "HC", "WE",
+}
+_SUM_COMPOSITION_COMPATIBLE_CLASSES = {
+    "CL", "MLCL", "DLCL", "BMP", "DG", "DGDG", "PE", "PC", "PG", "PI", "PS", "PA",
+    "PE O-", "PC O-", "PG O-", "PI O-", "PS O-", "PA O-", "TG", "DGTS", "DGGA",
+    "SQDG", "MGDG",
 }
 
 
@@ -93,6 +80,11 @@ def _extract_fatty_acid_motifs(annotation: object, lipid_class: object) -> List[
 
     lipid_class_norm = _normalize_class_name(lipid_class)
     if lipid_class_norm in _LYSO_OR_SINGLE_CHAIN_CLASSES:
+        return list(dict.fromkeys(motifs))
+
+    # Keep explicit sum-composition annotations for classes that commonly appear
+    # without chain-resolved separators, e.g. "CL 70:8".
+    if len(motifs) == 1 and lipid_class_norm in _SUM_COMPOSITION_COMPATIBLE_CLASSES:
         return list(dict.fromkeys(motifs))
 
     # Accept single-chain annotations only when the notation looks explicitly chain-resolved.
@@ -133,6 +125,22 @@ def _motif_sort_key(motif: str) -> tuple[int, int, str]:
         return int(carbons), int(double_bonds), motif
     except Exception:
         return (10**9, 10**9, str(motif))
+
+
+def _motif_carbons(motif: str) -> Optional[int]:
+    try:
+        carbons, _ = str(motif).split(":", 1)
+        return int(carbons)
+    except Exception:
+        return None
+
+
+def _motif_double_bonds(motif: str) -> Optional[int]:
+    try:
+        _, double_bonds = str(motif).split(":", 1)
+        return int(double_bonds)
+    except Exception:
+        return None
 
 
 def _select_default_panels(observed_motifs: List[str]) -> tuple[List[str], List[str]]:
@@ -178,6 +186,18 @@ def _bh_fdr(p_values: pd.Series) -> pd.Series:
     adj = np.clip(adj, 0, 1)
     out.loc[ranked.index] = adj
     return out
+
+
+def _welch_test(x1, x2) -> tuple[float, float]:
+    x1 = pd.Series(x1).replace([np.inf, -np.inf], np.nan).dropna().astype(float)
+    x2 = pd.Series(x2).replace([np.inf, -np.inf], np.nan).dropna().astype(float)
+    if len(x1) < 2 or len(x2) < 2:
+        return np.nan, np.nan
+    try:
+        stat, pval = ttest_ind(x1, x2, equal_var=False, nan_policy="omit")
+        return float(stat), float(pval)
+    except Exception:
+        return np.nan, np.nan
 
 
 def _compute_motif_stats(sample_totals: pd.DataFrame, ordered_groups: List[str]) -> pd.DataFrame:
@@ -239,21 +259,22 @@ def _compute_motif_pairwise_significance(sample_totals: pd.DataFrame, ordered_gr
         for i in range(len(groups)):
             for j in range(i + 1, len(groups)):
                 g1, g2 = groups[i], groups[j]
-                try:
-                    _, pval = mannwhitneyu(
-                        grouped[g1],
-                        grouped[g2],
-                        alternative="two-sided",
-                        method="asymptotic",
-                        use_continuity=False,
-                    )
-                except Exception:
-                    pval = np.nan
-                pairwise_records.append((str(motif), g1, g2, pval))
+                vals1 = np.asarray(grouped[g1], dtype=float)
+                vals2 = np.asarray(grouped[g2], dtype=float)
+                stat, pval = _welch_test(vals1, vals2)
+                pairwise_records.append({
+                    "Motif": str(motif),
+                    "Group1": g1,
+                    "Group2": g2,
+                    "Raw_p_value": pval,
+                    "Welch_t_statistic": float(stat) if pd.notna(stat) else np.nan,
+                    "Group1_n": int(len(vals1)),
+                    "Group2_n": int(len(vals2)),
+                })
 
     omnibus_fdr = _bh_fdr(pd.Series({motif: p for motif, p in omnibus_records}, dtype=float))
     pairwise_p = pd.Series(
-        [p for _, _, _, p in pairwise_records],
+        [record["Raw_p_value"] for record in pairwise_records],
         index=pd.Index(range(len(pairwise_records))),
         dtype=float,
     )
@@ -262,15 +283,19 @@ def _compute_motif_pairwise_significance(sample_totals: pd.DataFrame, ordered_gr
     for motif, _ in omnibus_records:
         results[motif]["omnibus_fdr"] = float(omnibus_fdr.get(motif, np.nan))
 
-    for idx, (motif, g1, g2, raw_p) in enumerate(pairwise_records):
+    for idx, record in enumerate(pairwise_records):
+        motif = str(record["Motif"])
         fdr_val = float(pairwise_fdr.loc[idx]) if pd.notna(pairwise_fdr.loc[idx]) else np.nan
         omnibus_p = results[motif]["omnibus_p"]
         omnibus_fdr_val = results[motif]["omnibus_fdr"]
         results[motif]["pairs"].append({
-            "Group1": g1,
-            "Group2": g2,
-            "Raw_p_value": raw_p,
+            "Group1": record["Group1"],
+            "Group2": record["Group2"],
+            "Raw_p_value": record["Raw_p_value"],
             "FDR_BH": fdr_val,
+            "Welch_t_statistic": record["Welch_t_statistic"],
+            "Group1_n": record["Group1_n"],
+            "Group2_n": record["Group2_n"],
             "Significant": bool(
                 pd.notna(fdr_val)
                 and fdr_val < 0.05
@@ -322,6 +347,9 @@ def _motif_pairwise_significance_to_frame(pairwise_significance: dict[str, dict[
                 "Group2": pair["Group2"],
                 "Raw_p_value": pair["Raw_p_value"],
                 "FDR_BH": fdr_val,
+                "Welch_t_statistic": pair.get("Welch_t_statistic", np.nan),
+                "Group1_n": pair.get("Group1_n", np.nan),
+                "Group2_n": pair.get("Group2_n", np.nan),
                 "Significance": stars,
                 "RawValues__Group1": "; ".join(f"{float(v):.12g}" for v in grouped_values.get(str(pair["Group1"]), [])),
                 "RawValues__Group2": "; ".join(f"{float(v):.12g}" for v in grouped_values.get(str(pair["Group2"]), [])),
@@ -446,6 +474,301 @@ def _heatmap(
         cbar.ax.tick_params(labelsize=style["tick_size"])
 
         fig.tight_layout(pad=1.2)
+        fig.savefig(out_png, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.12)
+        fig.savefig(out_svg, bbox_inches="tight", pad_inches=0.12)
+        plt.close(fig)
+
+
+def _plot_sum_composition_enrichment_surfaces(
+    group_means: pd.DataFrame,
+    ordered_groups: List[str],
+    out_png: str,
+    out_svg: str,
+    out_csv: str,
+    style: dict,
+) -> None:
+    _plot_motif_enrichment_surfaces(
+        group_means=group_means,
+        ordered_groups=ordered_groups,
+        motif_set=set(DEFAULT_FATTY_ACID_SUM_COMPOSITION_PANEL),
+        out_png=out_png,
+        out_svg=out_svg,
+        out_csv=out_csv,
+        style=style,
+        title="Fatty-acid sum-composition enrichment surfaces",
+    )
+
+
+def _plot_sum_composition_abundance_surfaces(
+    group_means: pd.DataFrame,
+    ordered_groups: List[str],
+    out_png: str,
+    out_svg: str,
+    out_csv: str,
+    style: dict,
+) -> None:
+    _plot_motif_abundance_surfaces(
+        group_means=group_means,
+        ordered_groups=ordered_groups,
+        motif_set=set(DEFAULT_FATTY_ACID_SUM_COMPOSITION_PANEL),
+        out_png=out_png,
+        out_svg=out_svg,
+        out_csv=out_csv,
+        style=style,
+        title="Fatty-acid sum-composition abundance surfaces",
+    )
+
+
+def _plot_motif_abundance_surfaces(
+    group_means: pd.DataFrame,
+    ordered_groups: List[str],
+    motif_set: set[str],
+    out_png: str,
+    out_svg: str,
+    out_csv: str,
+    style: dict,
+    title: str,
+) -> None:
+    motif_df = group_means.copy()
+    motif_df["Motif"] = motif_df["Motif"].astype(str)
+    motif_df = motif_df[motif_df["Motif"].isin(motif_set)].copy()
+    if motif_df.empty:
+        return
+
+    motif_df["Carbons"] = motif_df["Motif"].map(_motif_carbons)
+    motif_df["DoubleBonds"] = motif_df["Motif"].map(_motif_double_bonds)
+    motif_df = motif_df.dropna(subset=["Carbons", "DoubleBonds"])
+    if motif_df.empty:
+        return
+
+    motif_df["Carbons"] = motif_df["Carbons"].astype(int)
+    motif_df["DoubleBonds"] = motif_df["DoubleBonds"].astype(int)
+    motif_df["TotalIntensity"] = pd.to_numeric(motif_df["TotalIntensity"], errors="coerce")
+    motif_df = motif_df.loc[:, ["Group", "Motif", "Carbons", "DoubleBonds", "TotalIntensity"]]
+    motif_df.to_csv(out_csv, index=False)
+
+    carbons = sorted(motif_df["Carbons"].unique().tolist())
+    double_bonds = sorted(motif_df["DoubleBonds"].unique().tolist())
+    finite = motif_df["TotalIntensity"].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+    if finite.size == 0:
+        return
+
+    vmin = float(np.nanmin(finite))
+    vmax = float(np.nanmax(finite))
+    if not np.isfinite(vmin) or not np.isfinite(vmax):
+        return
+    if vmax <= vmin:
+        vmax = vmin + 1.0
+
+    n_groups = len(ordered_groups)
+    ncols = min(3, max(1, n_groups))
+    nrows = int(np.ceil(n_groups / ncols))
+    with mpl.rc_context({
+        "font.family": style["font_family"],
+        "font.size": style.get("base_font_size", style["label_size"]),
+        "axes.titlesize": style["title_size"],
+        "axes.labelsize": style["label_size"],
+        "xtick.labelsize": style["tick_size"],
+        "ytick.labelsize": style["tick_size"],
+    }):
+        fig, axes = plt.subplots(
+            nrows=nrows,
+            ncols=ncols,
+            figsize=(max(9.0, 4.8 * ncols), max(4.2, 3.9 * nrows)),
+            facecolor="white",
+            squeeze=False,
+        )
+        fig.subplots_adjust(top=0.80, bottom=0.16, left=0.08, right=0.92, hspace=0.52, wspace=0.28)
+
+        im = None
+        for ax, group in zip(axes.ravel(), ordered_groups):
+            sub = motif_df[motif_df["Group"].astype(str) == str(group)]
+            pivot = (
+                sub.pivot_table(
+                    index="DoubleBonds",
+                    columns="Carbons",
+                    values="TotalIntensity",
+                    aggfunc="mean",
+                )
+                .reindex(index=double_bonds, columns=carbons)
+            )
+            im = ax.imshow(
+                pivot.to_numpy(dtype=float),
+                aspect="auto",
+                origin="lower",
+                interpolation="nearest",
+                cmap=plt.get_cmap("Reds"),
+                vmin=vmin,
+                vmax=vmax,
+            )
+            ax.set_title(str(group), pad=8, fontweight="semibold")
+            x_positions = np.arange(len(carbons))
+            if len(carbons) > 18:
+                label_step = 3
+            elif len(carbons) > 10:
+                label_step = 2
+            else:
+                label_step = 1
+            shown_positions = x_positions[::label_step]
+            ax.set_xticks(shown_positions)
+            ax.set_xticklabels([carbons[i] for i in shown_positions], rotation=90, ha="center", va="top")
+            ax.set_yticks(np.arange(len(double_bonds)))
+            ax.set_yticklabels(double_bonds)
+            ax.set_xlabel("Total carbons", labelpad=10)
+            ax.set_ylabel("Double bond equivalents", labelpad=10)
+            ax.set_xticks(np.arange(-0.5, len(carbons), 1), minor=True)
+            ax.set_yticks(np.arange(-0.5, len(double_bonds), 1), minor=True)
+            ax.grid(which="minor", color=(1, 1, 1, 0.45), linestyle="-", linewidth=0.6)
+            ax.tick_params(which="minor", bottom=False, left=False)
+
+        for ax in axes.ravel()[n_groups:]:
+            ax.axis("off")
+
+        fig.suptitle(title, y=0.995, fontweight="semibold")
+        if im is not None:
+            cbar = fig.colorbar(im, ax=axes.ravel().tolist(), fraction=0.025, pad=0.03)
+            cbar.set_label("Mean abundance", labelpad=12)
+            cbar.ax.tick_params(labelsize=style["tick_size"])
+
+        fig.savefig(out_png, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.12)
+        fig.savefig(out_svg, bbox_inches="tight", pad_inches=0.12)
+        plt.close(fig)
+
+
+def _plot_motif_enrichment_surfaces(
+    group_means: pd.DataFrame,
+    ordered_groups: List[str],
+    motif_set: set[str],
+    out_png: str,
+    out_svg: str,
+    out_csv: str,
+    style: dict,
+    title: str,
+) -> None:
+    motif_df = group_means.copy()
+    motif_df["Motif"] = motif_df["Motif"].astype(str)
+    motif_df = motif_df[motif_df["Motif"].isin(motif_set)].copy()
+    if motif_df.empty:
+        return
+
+    motif_df["Carbons"] = motif_df["Motif"].map(_motif_carbons)
+    motif_df["DoubleBonds"] = motif_df["Motif"].map(_motif_double_bonds)
+    motif_df = motif_df.dropna(subset=["Carbons", "DoubleBonds"])
+    if motif_df.empty:
+        return
+
+    motif_df["Carbons"] = motif_df["Carbons"].astype(int)
+    motif_df["DoubleBonds"] = motif_df["DoubleBonds"].astype(int)
+    motif_df["TotalIntensity"] = pd.to_numeric(motif_df["TotalIntensity"], errors="coerce")
+
+    motif_group_table = (
+        motif_df
+        .pivot_table(index="Motif", columns="Group", values="TotalIntensity", aggfunc="mean")
+        .reindex(columns=ordered_groups)
+    )
+    if motif_group_table.empty:
+        return
+
+    group_totals = motif_group_table.sum(axis=0, min_count=1).replace(0, np.nan)
+    fraction_table = motif_group_table.div(group_totals, axis=1)
+    baseline = fraction_table.mean(axis=1).replace(0, np.nan)
+    enrich_table = np.log2(fraction_table.div(baseline, axis=0)).replace([np.inf, -np.inf], np.nan)
+
+    surface_df = (
+        enrich_table
+        .reset_index()
+        .melt(id_vars="Motif", var_name="Group", value_name="Log2Enrichment")
+    )
+    surface_df["Carbons"] = surface_df["Motif"].map(_motif_carbons)
+    surface_df["DoubleBonds"] = surface_df["Motif"].map(_motif_double_bonds)
+    surface_df = surface_df.dropna(subset=["Carbons", "DoubleBonds"])
+    if surface_df.empty:
+        return
+
+    surface_df["Carbons"] = surface_df["Carbons"].astype(int)
+    surface_df["DoubleBonds"] = surface_df["DoubleBonds"].astype(int)
+    surface_df = surface_df.loc[:, ["Group", "Motif", "Carbons", "DoubleBonds", "Log2Enrichment"]]
+    surface_df.to_csv(out_csv, index=False)
+
+    carbons = sorted(surface_df["Carbons"].unique().tolist())
+    double_bonds = sorted(surface_df["DoubleBonds"].unique().tolist())
+    finite = surface_df["Log2Enrichment"].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+    if finite.size == 0:
+        return
+    vmax = float(np.nanmax(np.abs(finite)))
+    if not np.isfinite(vmax) or vmax <= 0:
+        vmax = 1.0
+
+    n_groups = len(ordered_groups)
+    ncols = min(3, max(1, n_groups))
+    nrows = int(np.ceil(n_groups / ncols))
+    with mpl.rc_context({
+        "font.family": style["font_family"],
+        "font.size": style.get("base_font_size", style["label_size"]),
+        "axes.titlesize": style["title_size"],
+        "axes.labelsize": style["label_size"],
+        "xtick.labelsize": style["tick_size"],
+        "ytick.labelsize": style["tick_size"],
+    }):
+        fig, axes = plt.subplots(
+            nrows=nrows,
+            ncols=ncols,
+            figsize=(max(9.0, 4.8 * ncols), max(4.2, 3.9 * nrows)),
+            facecolor="white",
+            squeeze=False,
+        )
+        fig.subplots_adjust(top=0.80, bottom=0.16, left=0.08, right=0.92, hspace=0.52, wspace=0.28)
+
+        im = None
+        for ax, group in zip(axes.ravel(), ordered_groups):
+            sub = surface_df[surface_df["Group"].astype(str) == str(group)]
+            pivot = (
+                sub.pivot_table(
+                    index="DoubleBonds",
+                    columns="Carbons",
+                    values="Log2Enrichment",
+                    aggfunc="mean",
+                )
+                .reindex(index=double_bonds, columns=carbons)
+            )
+            im = ax.imshow(
+                pivot.to_numpy(dtype=float),
+                aspect="auto",
+                origin="lower",
+                interpolation="nearest",
+                cmap=style["diverging_cmap"],
+                vmin=-vmax,
+                vmax=vmax,
+            )
+            ax.set_title(str(group), pad=8, fontweight="semibold")
+            x_positions = np.arange(len(carbons))
+            if len(carbons) > 18:
+                label_step = 3
+            elif len(carbons) > 10:
+                label_step = 2
+            else:
+                label_step = 1
+            shown_positions = x_positions[::label_step]
+            ax.set_xticks(shown_positions)
+            ax.set_xticklabels([carbons[i] for i in shown_positions], rotation=90, ha="center", va="top")
+            ax.set_yticks(np.arange(len(double_bonds)))
+            ax.set_yticklabels(double_bonds)
+            ax.set_xlabel("Total carbons", labelpad=10)
+            ax.set_ylabel("Double bond equivalents", labelpad=10)
+            ax.set_xticks(np.arange(-0.5, len(carbons), 1), minor=True)
+            ax.set_yticks(np.arange(-0.5, len(double_bonds), 1), minor=True)
+            ax.grid(which="minor", color=(1, 1, 1, 0.45), linestyle="-", linewidth=0.6)
+            ax.tick_params(which="minor", bottom=False, left=False)
+
+        for ax in axes.ravel()[n_groups:]:
+            ax.axis("off")
+
+        fig.suptitle(title, y=0.995, fontweight="semibold")
+        if im is not None:
+            cbar = fig.colorbar(im, ax=axes.ravel().tolist(), fraction=0.025, pad=0.03)
+            cbar.set_label("log2 enrichment vs across-group baseline", labelpad=12)
+            cbar.ax.tick_params(labelsize=style["tick_size"])
+
         fig.savefig(out_png, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.12)
         fig.savefig(out_svg, bbox_inches="tight", pad_inches=0.12)
         plt.close(fig)
@@ -656,6 +979,8 @@ def run_from_stats(
     observed_motifs = motif_summary["Motif"].astype(str).tolist()
     top_motifs = observed_motifs[:24]
     chain_panel, sum_comp_panel = _select_default_panels(observed_motifs)
+    all_chain_motifs = [motif for motif in observed_motifs if motif in set(DEFAULT_FATTY_ACID_CHAIN_PANEL)]
+    all_sum_comp_motifs = [motif for motif in observed_motifs if motif in set(DEFAULT_FATTY_ACID_SUM_COMPOSITION_PANEL)]
     boxplot_motifs = list(dict.fromkeys(observed_motifs))
 
     heatmap_table = (
@@ -674,8 +999,26 @@ def run_from_stats(
         style=style,
         y_label="Fatty-acid motif",
     )
+    heatmap_all_png = os.path.join(out_dir, "fatty_acid_motif_heatmap_all.png")
+    heatmap_all_svg = os.path.join(out_dir, "fatty_acid_motif_heatmap_all.svg")
+    heatmap_all_table = (
+        group_means
+        .pivot(index="Motif", columns="Group", values="TotalIntensity")
+        .reindex(index=sorted(observed_motifs, key=_motif_sort_key), columns=ordered_groups)
+    )
+    _heatmap(
+        heatmap_all_table,
+        stats_df,
+        heatmap_all_png,
+        heatmap_all_svg,
+        title="All fatty-acid motifs by group",
+        style=style,
+        y_label="Fatty-acid motif",
+    )
 
     panel_outputs: Dict[str, str] = {}
+    panel_outputs["all_motifs_heatmap_png"] = heatmap_all_png
+    panel_outputs["all_motifs_heatmap_svg"] = heatmap_all_svg
     if chain_panel:
         chain_panel_table = (
             group_means[group_means["Motif"].astype(str).isin(chain_panel)]
@@ -696,6 +1039,66 @@ def run_from_stats(
         panel_outputs["chain_panel_heatmap_png"] = chain_panel_png
         panel_outputs["chain_panel_heatmap_svg"] = chain_panel_svg
 
+    if all_chain_motifs:
+        all_chain_table = (
+            group_means[group_means["Motif"].astype(str).isin(all_chain_motifs)]
+            .pivot(index="Motif", columns="Group", values="TotalIntensity")
+            .reindex(index=sorted(all_chain_motifs, key=_motif_sort_key), columns=ordered_groups)
+        )
+        all_chain_png = os.path.join(out_dir, "fatty_acid_motif_heatmap_all_chain_motifs.png")
+        all_chain_svg = os.path.join(out_dir, "fatty_acid_motif_heatmap_all_chain_motifs.svg")
+        _heatmap(
+            all_chain_table,
+            stats_df,
+            all_chain_png,
+            all_chain_svg,
+            title="All fatty-acid chain motifs by group",
+            style=style,
+            y_label="Fatty-acid motif",
+        )
+        panel_outputs["all_chain_motifs_heatmap_png"] = all_chain_png
+        panel_outputs["all_chain_motifs_heatmap_svg"] = all_chain_svg
+
+        chain_abundance_surface_png = os.path.join(out_dir, "fatty_acid_chain_motif_abundance_surfaces.png")
+        chain_abundance_surface_svg = os.path.join(out_dir, "fatty_acid_chain_motif_abundance_surfaces.svg")
+        chain_abundance_surface_csv = os.path.join(out_dir, "fatty_acid_chain_motif_abundance_surface_long.csv")
+        _plot_motif_abundance_surfaces(
+            group_means=group_means,
+            ordered_groups=ordered_groups,
+            motif_set=set(DEFAULT_FATTY_ACID_CHAIN_PANEL),
+            out_png=chain_abundance_surface_png,
+            out_svg=chain_abundance_surface_svg,
+            out_csv=chain_abundance_surface_csv,
+            style=style,
+            title="Fatty-acid molecular-species abundance surfaces",
+        )
+        if os.path.exists(chain_abundance_surface_png):
+            panel_outputs["chain_motif_abundance_surface_png"] = chain_abundance_surface_png
+        if os.path.exists(chain_abundance_surface_svg):
+            panel_outputs["chain_motif_abundance_surface_svg"] = chain_abundance_surface_svg
+        if os.path.exists(chain_abundance_surface_csv):
+            panel_outputs["chain_motif_abundance_surface_csv"] = chain_abundance_surface_csv
+
+        chain_surface_png = os.path.join(out_dir, "fatty_acid_chain_motif_enrichment_surfaces.png")
+        chain_surface_svg = os.path.join(out_dir, "fatty_acid_chain_motif_enrichment_surfaces.svg")
+        chain_surface_csv = os.path.join(out_dir, "fatty_acid_chain_motif_enrichment_surface_long.csv")
+        _plot_motif_enrichment_surfaces(
+            group_means=group_means,
+            ordered_groups=ordered_groups,
+            motif_set=set(DEFAULT_FATTY_ACID_CHAIN_PANEL),
+            out_png=chain_surface_png,
+            out_svg=chain_surface_svg,
+            out_csv=chain_surface_csv,
+            style=style,
+            title="Fatty-acid molecular-species enrichment surfaces",
+        )
+        if os.path.exists(chain_surface_png):
+            panel_outputs["chain_motif_enrichment_surface_png"] = chain_surface_png
+        if os.path.exists(chain_surface_svg):
+            panel_outputs["chain_motif_enrichment_surface_svg"] = chain_surface_svg
+        if os.path.exists(chain_surface_csv):
+            panel_outputs["chain_motif_enrichment_surface_csv"] = chain_surface_csv
+
     if sum_comp_panel:
         sum_panel_table = (
             group_means[group_means["Motif"].astype(str).isin(sum_comp_panel)]
@@ -715,6 +1118,93 @@ def run_from_stats(
         )
         panel_outputs["sum_composition_panel_heatmap_png"] = sum_panel_png
         panel_outputs["sum_composition_panel_heatmap_svg"] = sum_panel_svg
+
+    if all_sum_comp_motifs:
+        all_sum_panel_table = (
+            group_means[group_means["Motif"].astype(str).isin(all_sum_comp_motifs)]
+            .pivot(index="Motif", columns="Group", values="TotalIntensity")
+            .reindex(index=sorted(all_sum_comp_motifs, key=_motif_sort_key), columns=ordered_groups)
+        )
+        all_sum_panel_png = os.path.join(out_dir, "fatty_acid_motif_heatmap_all_sum_compositions.png")
+        all_sum_panel_svg = os.path.join(out_dir, "fatty_acid_motif_heatmap_all_sum_compositions.svg")
+        _heatmap(
+            all_sum_panel_table,
+            stats_df,
+            all_sum_panel_png,
+            all_sum_panel_svg,
+            title="All fatty-acid sum compositions by group",
+            style=style,
+            y_label="Fatty-acid motif",
+        )
+        panel_outputs["all_sum_compositions_heatmap_png"] = all_sum_panel_png
+        panel_outputs["all_sum_compositions_heatmap_svg"] = all_sum_panel_svg
+
+        sum_abundance_surface_png = os.path.join(out_dir, "fatty_acid_sum_composition_abundance_surfaces.png")
+        sum_abundance_surface_svg = os.path.join(out_dir, "fatty_acid_sum_composition_abundance_surfaces.svg")
+        sum_abundance_surface_csv = os.path.join(out_dir, "fatty_acid_sum_composition_abundance_surface_long.csv")
+        _plot_sum_composition_abundance_surfaces(
+            group_means=group_means,
+            ordered_groups=ordered_groups,
+            out_png=sum_abundance_surface_png,
+            out_svg=sum_abundance_surface_svg,
+            out_csv=sum_abundance_surface_csv,
+            style=style,
+        )
+        if os.path.exists(sum_abundance_surface_png):
+            panel_outputs["sum_composition_abundance_surface_png"] = sum_abundance_surface_png
+        if os.path.exists(sum_abundance_surface_svg):
+            panel_outputs["sum_composition_abundance_surface_svg"] = sum_abundance_surface_svg
+        if os.path.exists(sum_abundance_surface_csv):
+            panel_outputs["sum_composition_abundance_surface_csv"] = sum_abundance_surface_csv
+
+        sum_surface_png = os.path.join(out_dir, "fatty_acid_sum_composition_enrichment_surfaces.png")
+        sum_surface_svg = os.path.join(out_dir, "fatty_acid_sum_composition_enrichment_surfaces.svg")
+        sum_surface_csv = os.path.join(out_dir, "fatty_acid_sum_composition_enrichment_surface_long.csv")
+        _plot_sum_composition_enrichment_surfaces(
+            group_means=group_means,
+            ordered_groups=ordered_groups,
+            out_png=sum_surface_png,
+            out_svg=sum_surface_svg,
+            out_csv=sum_surface_csv,
+            style=style,
+        )
+        if os.path.exists(sum_surface_png):
+            panel_outputs["sum_composition_enrichment_surface_png"] = sum_surface_png
+        if os.path.exists(sum_surface_svg):
+            panel_outputs["sum_composition_enrichment_surface_svg"] = sum_surface_svg
+        if os.path.exists(sum_surface_csv):
+            panel_outputs["sum_composition_enrichment_surface_csv"] = sum_surface_csv
+
+        split_ranges = [
+            (27, 40, "27_40", "Fatty-acid sum compositions (27-40 carbons) by group"),
+            (41, 52, "41_52", "Fatty-acid sum compositions (41-52 carbons) by group"),
+            (53, 80, "53_80", "Fatty-acid sum compositions (53-80 carbons) by group"),
+        ]
+        for lower, upper, slug, title in split_ranges:
+            range_motifs = [
+                motif for motif in all_sum_comp_motifs
+                if _motif_carbons(motif) is not None and lower <= int(_motif_carbons(motif)) <= upper
+            ]
+            if not range_motifs:
+                continue
+            range_table = (
+                group_means[group_means["Motif"].astype(str).isin(range_motifs)]
+                .pivot(index="Motif", columns="Group", values="TotalIntensity")
+                .reindex(index=sorted(range_motifs, key=_motif_sort_key), columns=ordered_groups)
+            )
+            range_png = os.path.join(out_dir, f"fatty_acid_motif_heatmap_sum_compositions_{slug}.png")
+            range_svg = os.path.join(out_dir, f"fatty_acid_motif_heatmap_sum_compositions_{slug}.svg")
+            _heatmap(
+                range_table,
+                stats_df,
+                range_png,
+                range_svg,
+                title=title,
+                style=style,
+                y_label="Fatty-acid motif",
+            )
+            panel_outputs[f"sum_compositions_{slug}_heatmap_png"] = range_png
+            panel_outputs[f"sum_compositions_{slug}_heatmap_svg"] = range_svg
 
     boxplot_dir = prepare_output_dir(os.path.join(out_dir, "FattyAcidMotif_Boxplots"))
     y_label = (
@@ -749,6 +1239,8 @@ def run_from_stats(
         "motif_feature_map_csv": motif_map_csv,
         "heatmap_top_png": heatmap_png,
         "heatmap_top_svg": heatmap_svg,
+        "heatmap_all_png": heatmap_all_png,
+        "heatmap_all_svg": heatmap_all_svg,
         "boxplot_dir": str(boxplot_dir),
         **panel_outputs,
     }

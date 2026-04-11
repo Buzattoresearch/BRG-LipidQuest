@@ -75,6 +75,49 @@ def _canon_class(x: str, unknown_policy: str = "append") -> str:
     return "Other" if unknown_policy == "other" else x
 
 
+def _default_class_to_category() -> dict:
+    """
+    Category mapping for enrichment summaries and heatmaps.
+    """
+    return {
+        "FA": {"CAR", "CoA", "FA", "FAG", "FAHFA", "FAL", "FOH", "HC", "NAx", "NAE", "NAT", "WE"},
+        "GL": {"MG", "DG", "TG", "DGCC", "Hex2MG", "Hex2DG", "DGTA", "DGTS", "GlcADG", "HexDG", "HexMG", "SQDG", "SQMG"},
+        "GP": {
+            "PC", "PE", "PEth", "PG", "PI", "PS", "PA", "CL", "MLCL", "DLCL",
+            "LPC", "LPE", "LPG", "LPI", "LPS", "LPA",
+            "BMP", "CDP-DG", "Glc-GP", "GP", "PIM", "PIP", "PnC", "PnE", "PPA",
+        },
+        "SL": {
+            "Cer", "ACer", "CerP", "GlcCer", "HexCer",
+            "SM", "LSM",
+            "HexSPB", "SPB", "SBPB", "SulfateHexSPB",
+            "MIPC", "M(IP)2C",
+            "PE-Cer", "PI-Cer", "SCer",
+        },
+        "ST": {"ST", "CE"},
+        "Other": {"PK", "PR", "SL"},
+    }
+
+
+def _invert_class_to_category(class_to_category: dict) -> dict:
+    out = {}
+    for category, classes in (class_to_category or {}).items():
+        for lipid_class in classes:
+            out[str(lipid_class).strip()] = str(category).strip()
+    return out
+
+
+def _map_class_to_category(lipid_class: str, class_to_cat_lookup: dict) -> str:
+    lipid_class = str(lipid_class).strip()
+    if lipid_class in {"", "nan", "NaN", "None", "<NA>", "NA"}:
+        return "Other"
+    return class_to_cat_lookup.get(lipid_class, "Other")
+
+
+def _safe_name(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", str(text)).strip("_") or "Category"
+
+
 def _order_groups(present: List[str], group_order: Optional[List[str]]) -> List[str]:
     present = [str(g) for g in present]
     if not group_order:
@@ -195,7 +238,7 @@ def _wrap_cbar_label(label: str, width: int = 18) -> str:
         return text
     if len(text) <= width:
         return text
-    return fill(text, width=width, max_lines=2)
+    return fill(text, width=width)
 
 
 def _compute_enrichment_stats(
@@ -352,7 +395,7 @@ def _plot_heatmap(
     ax.set_yticklabels(data.index.tolist(), fontsize=style["tick_size"])
     ax.set_title(title, fontsize=style["title_size"], pad=14, fontweight="semibold")
 
-    cbar = fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.03)
     cbar.set_label(_wrap_cbar_label(cbar_label), labelpad=14, fontsize=style["label_size"])
     cbar.ax.tick_params(labelsize=style["tick_size"])
 
@@ -375,8 +418,18 @@ def _plot_heatmap(
                 )
 
     if note_text:
-        fig.subplots_adjust(bottom=0.34)
-        fig.text(0.5, 0.001, note_text, ha="center", va="bottom", fontsize=max(style["tick_size"] - 1, 9), color="dimgray")
+        fig.subplots_adjust(bottom=0.40, right=0.90)
+        fig.text(
+            0.5,
+            0.012,
+            note_text,
+            ha="center",
+            va="bottom",
+            fontsize=max(style["tick_size"] - 1, 9),
+            color="dimgray",
+        )
+    else:
+        fig.subplots_adjust(right=0.90)
 
     fig.savefig(out_png, dpi=style["dpi"], bbox_inches="tight", pad_inches=0.15)
     fig.savefig(out_svg, bbox_inches="tight", pad_inches=0.15)
@@ -451,6 +504,7 @@ def run_from_stats(
     sat_index = db / carb.replace(0, np.nan)
 
     class_dir = prepare_output_dir(os.path.join(out_dir, "LipidClass_Enrichment"))
+    category_dir = prepare_output_dir(os.path.join(out_dir, "LipidCategory_Enrichment"))
     chain_dir = prepare_output_dir(os.path.join(out_dir, "ChainLength_Enrichment"))
     unsat_dir = prepare_output_dir(os.path.join(out_dir, "Unsaturation_Enrichment"))
     sat_dir = prepare_output_dir(os.path.join(out_dir, "SaturationIndex_Changes"))
@@ -476,6 +530,40 @@ def run_from_stats(
         ),
         significance_df=class_stats,
         significance_label_col="Lipid Class",
+        style=style,
+    )
+
+    class_to_category = _default_class_to_category()
+    class_to_category_lookup = _invert_class_to_category(class_to_category)
+    category_series = class_series.map(lambda lipid_class: _map_class_to_category(lipid_class, class_to_category_lookup))
+    category_fraction = _compute_group_fraction_table(X, y, category_series).reindex(ordered_groups)
+    desired_category_order = [cat for cat in class_to_category.keys() if cat in category_fraction.columns]
+    remaining_category_order = [cat for cat in category_fraction.columns if cat not in desired_category_order]
+    category_fraction = category_fraction.reindex(columns=desired_category_order + remaining_category_order)
+    category_sample_fraction = _compute_sample_fraction_table(X, y, category_series)
+    if not category_sample_fraction.empty:
+        category_cols = [c for c in desired_category_order + remaining_category_order if c in category_sample_fraction.columns]
+        other_cols = [c for c in category_sample_fraction.columns if c not in category_cols and c != "Group"]
+        category_sample_fraction = category_sample_fraction.reindex(columns=category_cols + other_cols + (["Group"] if "Group" in category_sample_fraction.columns else []))
+    category_stats = _compute_enrichment_stats(category_sample_fraction, ordered_groups, "Lipid category")
+    category_log2 = _compute_log2_enrichment(category_fraction)
+    category_fraction.to_csv(os.path.join(category_dir, "lipid_category_group_mean_fraction.csv"), index=True)
+    category_log2.to_csv(os.path.join(category_dir, "lipid_category_group_log2_enrichment.csv"), index=True)
+    category_stats.to_csv(os.path.join(category_dir, "lipid_category_enrichment_statistics.csv"), index=False)
+    _plot_heatmap(
+        category_log2,
+        os.path.join(category_dir, "lipid_category_log2_enrichment_heatmap.png"),
+        os.path.join(category_dir, "lipid_category_log2_enrichment_heatmap.svg"),
+        "Lipid category enrichment by group",
+        "log2(group fraction / across-group mean fraction)",
+        note_text=(
+            "Positive values (red) -> category is enriched in that group relative to the across-group baseline\n"
+            "Negative values (blue) -> category is depleted in that group relative to the across-group baseline\n"
+            "Near zero -> category composition is close to the across-group average\n"
+            "* indicates FDR < 0.05 across groups for that row"
+        ),
+        significance_df=category_stats,
+        significance_label_col="Lipid category",
         style=style,
     )
 
@@ -584,6 +672,139 @@ def run_from_stats(
         significance_label_col="Lipid Class",
         style=style,
     )
+
+    chain_cat_root = prepare_output_dir(os.path.join(chain_dir, "ByCategory"))
+    unsat_cat_root = prepare_output_dir(os.path.join(unsat_dir, "ByCategory"))
+    sat_cat_root = prepare_output_dir(os.path.join(sat_dir, "ByCategory"))
+
+    category_order = list(class_to_category.keys())
+    present_categories = [cat for cat in category_order if (category_series.astype(str) == str(cat)).any()]
+    extra_categories = [
+        cat for cat in pd.unique(category_series.astype(str)).tolist()
+        if cat not in present_categories and str(cat).strip()
+    ]
+    present_categories.extend(extra_categories)
+
+    for category in present_categories:
+        category_mask = category_series.astype(str).eq(str(category))
+        category_features = category_series.index[category_mask]
+        category_X = X.loc[:, X.columns.intersection(category_features)]
+        if category_X.empty:
+            continue
+
+        safe_category = _safe_name(category)
+
+        category_carb_labels = carb_labels.reindex(category_X.columns)
+        category_carb_fraction = _compute_group_fraction_table(category_X, y, category_carb_labels).reindex(ordered_groups)
+        category_carb_fraction = _sort_bin_columns(category_carb_fraction)
+        category_carb_log2 = _compute_log2_enrichment(category_carb_fraction)
+        category_carb_sample_fraction = _compute_sample_fraction_table(category_X, y, category_carb_labels)
+        category_carb_stats = _compute_enrichment_stats(category_carb_sample_fraction, ordered_groups, "Total carbons")
+        if not category_carb_fraction.empty and not category_carb_log2.empty:
+            category_chain_dir = prepare_output_dir(os.path.join(chain_cat_root, safe_category))
+            category_carb_fraction.to_csv(os.path.join(category_chain_dir, "chain_length_group_mean_fraction.csv"), index=True)
+            category_carb_log2.to_csv(os.path.join(category_chain_dir, "chain_length_group_log2_enrichment.csv"), index=True)
+            category_carb_stats.to_csv(os.path.join(category_chain_dir, "chain_length_enrichment_statistics.csv"), index=False)
+            _plot_heatmap(
+                category_carb_log2,
+                os.path.join(category_chain_dir, "chain_length_log2_enrichment_heatmap.png"),
+                os.path.join(category_chain_dir, "chain_length_log2_enrichment_heatmap.svg"),
+                f"{category} chain-length enrichment by group",
+                "log2(group fraction / across-group mean fraction)",
+                note_text=(
+                    "Positive values (red) -> that carbon bin is enriched in the group within this lipid category\n"
+                    "Negative values (blue) -> that carbon bin is depleted in the group within this lipid category\n"
+                    "Near zero -> abundance share for that carbon bin is close to the across-group average within this category\n"
+                    "* indicates FDR < 0.05 across groups for that row"
+                ),
+                significance_df=category_carb_stats.assign(**{"Total carbons": category_carb_stats["Total carbons"].astype(str)}) if not category_carb_stats.empty else category_carb_stats,
+                significance_label_col="Total carbons",
+                style=style,
+            )
+
+        category_db_labels = db_labels.reindex(category_X.columns)
+        category_db_fraction = _compute_group_fraction_table(category_X, y, category_db_labels).reindex(ordered_groups)
+        category_db_fraction = _sort_bin_columns(category_db_fraction)
+        category_db_log2 = _compute_log2_enrichment(category_db_fraction)
+        category_db_sample_fraction = _compute_sample_fraction_table(category_X, y, category_db_labels)
+        category_db_stats = _compute_enrichment_stats(category_db_sample_fraction, ordered_groups, "Double bonds")
+        if not category_db_fraction.empty and not category_db_log2.empty:
+            category_unsat_dir = prepare_output_dir(os.path.join(unsat_cat_root, safe_category))
+            category_db_fraction.to_csv(os.path.join(category_unsat_dir, "unsaturation_group_mean_fraction.csv"), index=True)
+            category_db_log2.to_csv(os.path.join(category_unsat_dir, "unsaturation_group_log2_enrichment.csv"), index=True)
+            category_db_stats.to_csv(os.path.join(category_unsat_dir, "unsaturation_enrichment_statistics.csv"), index=False)
+            _plot_heatmap(
+                category_db_log2,
+                os.path.join(category_unsat_dir, "unsaturation_log2_enrichment_heatmap.png"),
+                os.path.join(category_unsat_dir, "unsaturation_log2_enrichment_heatmap.svg"),
+                f"{category} unsaturation enrichment by group",
+                "log2(group fraction / across-group mean fraction)",
+                note_text=(
+                    "Positive values (red) -> that double-bond bin is enriched in the group within this lipid category\n"
+                    "Negative values (blue) -> that double-bond bin is depleted in the group within this lipid category\n"
+                    "Near zero -> abundance share for that unsaturation bin is close to the across-group average within this category\n"
+                    "* indicates FDR < 0.05 across groups for that row"
+                ),
+                significance_df=category_db_stats.assign(**{"Double bonds": category_db_stats["Double bonds"].astype(str)}) if not category_db_stats.empty else category_db_stats,
+                significance_label_col="Double bonds",
+                style=style,
+            )
+
+        category_classes = sorted(
+            [cls for cls in class_series.loc[category_mask].dropna().astype(str).unique().tolist() if cls and cls.lower() != "nan"]
+        )
+        category_sat_rows = []
+        for group in ordered_groups:
+            sample_mask = y.astype(str).eq(str(group))
+            if int(sample_mask.sum()) == 0:
+                continue
+            mean_abundance = category_X.loc[sample_mask].apply(pd.to_numeric, errors="coerce").mean(axis=0)
+            for cls in category_classes:
+                feats = class_series[class_series.astype(str).eq(cls)].index.intersection(category_X.columns)
+                if len(feats) == 0:
+                    continue
+                sat_mean = _weighted_mean(sat_index.reindex(feats), mean_abundance.reindex(feats))
+                category_sat_rows.append({"Class": cls, "Group": group, "Weighted mean DB_per_carbon": sat_mean})
+
+        category_sat_df = pd.DataFrame(category_sat_rows)
+        category_sat_sample_df = _compute_saturation_sample_table(category_X, y, class_series.reindex(category_X.columns), sat_index.reindex(category_X.columns))
+        category_sat_stats = _compute_groupwise_value_stats(
+            df=category_sat_sample_df,
+            label_col="Class",
+            value_col="Weighted mean DB_per_carbon",
+            group_col="Group",
+            ordered_groups=ordered_groups,
+        )
+        if not category_sat_stats.empty:
+            category_sat_stats = category_sat_stats.rename(columns={"Class": "Lipid Class"})
+
+        if not category_sat_df.empty:
+            category_sat_dir = prepare_output_dir(os.path.join(sat_cat_root, safe_category))
+            category_sat_df["Class mean DB_per_carbon"] = category_sat_df.groupby("Class")["Weighted mean DB_per_carbon"].transform("mean")
+            category_sat_df["Saturation index change"] = category_sat_df["Weighted mean DB_per_carbon"] - category_sat_df["Class mean DB_per_carbon"]
+            category_sat_df.to_csv(os.path.join(category_sat_dir, "saturation_index_changes_long.csv"), index=False)
+            category_sat_stats.to_csv(os.path.join(category_sat_dir, "saturation_index_change_statistics.csv"), index=False)
+
+            category_sat_pivot = category_sat_df.pivot(index="Class", columns="Group", values="Weighted mean DB_per_carbon").reindex(columns=ordered_groups)
+            category_sat_change = category_sat_df.pivot(index="Class", columns="Group", values="Saturation index change").reindex(columns=ordered_groups)
+            category_sat_pivot.to_csv(os.path.join(category_sat_dir, "saturation_index_by_class_group.csv"), index=True)
+            category_sat_change.to_csv(os.path.join(category_sat_dir, "saturation_index_change_by_class_group.csv"), index=True)
+            _plot_heatmap(
+                category_sat_change,
+                os.path.join(category_sat_dir, "saturation_index_change_heatmap.png"),
+                os.path.join(category_sat_dir, "saturation_index_change_heatmap.svg"),
+                f"{category} saturation index changes by class",
+                "Delta weighted mean DB/carbon",
+                note_text=(
+                    "Positive values (red) -> higher DB/carbon than the class average across groups within this category\n"
+                    "Negative values (blue) -> lower DB/carbon than the class average across groups within this category\n"
+                    "Near zero -> saturation index is close to the class-wide average within this category\n"
+                    "* indicates FDR < 0.05 across groups for that row"
+                ),
+                significance_df=category_sat_stats,
+                significance_label_col="Lipid Class",
+                style=style,
+            )
 
     print(f"[Enrichment] Completed. Results saved to: {out_dir}", flush=True)
     return {

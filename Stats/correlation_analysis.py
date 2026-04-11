@@ -391,9 +391,11 @@ def _plot_lower_triangle_heatmap(C: pd.DataFrame,
                                  out_svg: Path,
                                  ylabels_clean: bool = True,
                                  tick_fs: int = 8,
+                                 label_fs: Optional[int] = None,
                                  note_text: Optional[str] = None) -> None:
     """Lower-triangle clustered heatmap with labels on left and on-diagonal rotated labels on top."""
-    label_fs = tick_fs + 4
+    if label_fs is None:
+        label_fs = tick_fs + 4
     fig, ax = plt.subplots(figsize=(14, 12))
     mask = np.triu(np.ones_like(C, dtype=bool), k=1)
     sns.heatmap(
@@ -887,6 +889,7 @@ def run_correlation_analysis(
             out_svg=outdir / f"correlation_compounds_top{top_n}.svg",
             ylabels_clean=True,
             tick_fs=6 if top_n >= 100 else 7 if top_n >= 50 else 10 if top_n >= 25 else 12,
+            label_fs=7 if top_n >= 100 else 10 if top_n >= 50 else None,
             note_text=(
                 "Red cells mark lipid pairs that tend to increase and decrease together across samples.\n"
                 "Blue cells mark inverse relationships; clustered blocks suggest coordinated lipid modules."
@@ -986,6 +989,7 @@ def run_correlation_analysis(
                     out_svg=gdir / f"{prefix}_compound_correlation.svg",
                     ylabels_clean=True,
                     tick_fs=6 if top_n >= 100 else 7 if top_n >= 50 else 7 if Cg.shape[0] >= 60 else 8 if Cg.shape[0] >= 40 else 10,
+                    label_fs=7 if top_n >= 100 else 10 if top_n >= 50 else None,
                     note_text=(
                         "This shows how strongly the selected lipids move together within this group only.\n"
                         "Compare these group-specific patterns to see whether coordination strengthens or weakens between groups."
